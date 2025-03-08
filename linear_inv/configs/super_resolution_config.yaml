@@ -1,0 +1,20 @@
+conditioning:
+  method: mpgd
+  params:
+    scale: 0.3 # will be changed in another script
+
+# data:
+#   name: ffhq
+#   root: ./data/samples
+data:
+  name: celeba
+  root: ./data/celeba/
+measurement:
+  operator:
+    name: super_resolution
+    in_shape: !!python/tuple [1, 3, 256, 256]
+    scale_factor: 4
+  
+  noise: 
+    name: gaussian
+    sigma: 0.01

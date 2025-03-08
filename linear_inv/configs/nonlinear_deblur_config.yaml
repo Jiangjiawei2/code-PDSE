@@ -1,0 +1,20 @@
+
+conditioning:
+  method: mpgd # Do not touch
+  params:
+    scale: 0.3
+
+# data:
+#   name: ffhq
+#   root: ./data/samples/
+data:
+  name: celeba
+  root: ./data/celeba/
+measurement:
+  operator:
+    name: nonlinear_blur
+    opt_yml_path: ./bkse/options/generate_blur/default.yml
+
+  noise: 
+    name: gaussian
+    sigma: 0.01
