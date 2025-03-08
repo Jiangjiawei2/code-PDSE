@@ -263,38 +263,6 @@ class GaussianNoise(Noise):
     def forward(self, data):
         return data + torch.randn_like(data, device=data.device) * self.sigma
 
-@register_noise(name='impulse')
-class ImpulseNoise(Noise):
-    def __init__(self, p):
-        self.p = p
-    
-    def forward(self, data):
-        mask = torch.rand_like(data) < self.p
-        replace = torch.where(torch.rand_like(data) < 0.5, 
-                             torch.zeros_like(data), 
-                             torch.ones_like(data))
-        return data * (1 - mask) + replace * mask
-
-@register_noise(name='shot')
-class ShotNoise(Noise):
-    def __init__(self, lam):
-        self.lam = lam
-    
-    def forward(self, data):
-        # 泊松分布采样需要非负输入，确保数据在有效范围
-        scaled_data = data.clamp(0.0, 1.0) * self.lam
-        noisy = torch.poisson(scaled_data) / self.lam
-        return noisy.clamp(0.0, 1.0)
-
-@register_noise(name='speckle')
-class SpeckleNoise(Noise):
-    def __init__(self, var):
-        self.var = var
-    
-    def forward(self, data):
-        epsilon = torch.randn_like(data) * (self.var ** 0.5)
-        return data * (1 + epsilon)
-    
 
 @register_noise(name='poisson')
 class PoissonNoise(Noise):
