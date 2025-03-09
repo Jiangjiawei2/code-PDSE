@@ -42,7 +42,8 @@ def main():
     parser.add_argument('--save_dir', type=str, default='./outputs/ffhq/')
     parser.add_argument('--algo', type=str, default='acce_RED_diff')
     parser.add_argument('--iter', type=int, default=500)
-    parser.add_argument('--sigma', type=float, default=0.01, help='New value for sigma')
+    parser.add_argument('--noise_scale', type=float, default=0.03, help='a value of noise_scale')
+    parser.add_argument('--noise_type', type=str, default='impulse', help='unkown noise type')
     parser.add_argument('--iter_step', type=float, default=3, help='New value for iter_step')
 
     args = parser.parse_args()
@@ -70,7 +71,8 @@ def main():
     diffusion_config["eta"] = args.eta
     task_config["conditioning"]["method"] = args.method
     task_config["conditioning"]["params"]["scale"] = args.scale
-    task_config["measurement"]["noise"]["sigma"] = args.sigma
+    task_config["measurement"]["noise"]["noise_scale"] = args.noise_scale
+    task_config["measurement"]["noise"]["name"] = args.noise_type
 
     # Load model
     model = create_model(**model_config)
@@ -100,9 +102,9 @@ def main():
     # Working directory
     dir_path = f"{diffusion_config['timestep_respacing']}_eta{args.eta}_scale{args.scale}"
     # out_path = os.path.join(args.save_dir, measure_config['operator']['name'], task_config['data']['name'], args.algo, task_config['conditioning']['method'])    
-    # out_path = os.path.join(args.save_dir, measure_config['operator']['name'], task_config['data']['name'], args.algo, str(args.sigma), task_config['conditioning']['method'])   ## noise  
+    out_path = os.path.join(args.save_dir, measure_config['operator']['name'], task_config['data']['name'], args.algo, str(args.noise_type), task_config['conditioning']['method'])   ## noise  
     ## abltion
-    out_path = os.path.join(args.save_dir, measure_config['operator']['name'], task_config['data']['name'], args.algo, 'step'+ str(args.iter_step), task_config['conditioning']['method'])   ## noise  
+    # out_path = os.path.join(args.save_dir, measure_config['operator']['name'], task_config['data']['name'], args.algo, 'step'+ str(args.iter_step), task_config['conditioning']['method'])   ## noise  
 
 
     os.makedirs(out_path, exist_ok=True)
@@ -138,7 +140,7 @@ def main():
     
     #### Do Inference
     for i, ref_img in enumerate(loader):
-        if i >= 10:
+        if i >= 100:
             break
         logger.info(f"Inference for image {i}")
         fname = f'{i:03}.png'

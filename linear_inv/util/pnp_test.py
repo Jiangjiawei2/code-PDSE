@@ -71,15 +71,17 @@ def DMPlug(
         optimizer.step()
         losses.append(loss.item())
 
-        # with torch.no_grad():
-        #     metrics = compute_metrics(
-        #     sample=sample,
-        #     ref_img=ref_img,
-        #     out_path=out_path,
-        #     device=device,
-        #     loss_fn_alex=loss_fn_alex,
-        #     metrics=None  # 初次调用时不传递 metrics，函数会自动初始化
-        # )
+        with torch.no_grad():
+            metrics = compute_metrics(
+            sample=sample,
+            ref_img=ref_img,
+            out_path=out_path,
+            device=device,
+            loss_fn_alex=loss_fn_alex,
+            epoch=epoch,
+            iteration=iteration,
+            metrics=None  # 初次调用时不传递 metrics，函数会自动初始化
+        )
 
                 
             # # Statistical characteristic-based early stopping
@@ -114,8 +116,8 @@ def DMPlug(
     # plt.savefig(os.path.join(out_path, 'psnr.png'))
     # plt.close()
     
-    # plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
-    # plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
+    plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
+    plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
     
     
     # 转换最佳图像和参考图像为 numpy 格式
@@ -567,16 +569,18 @@ def acce_RED_diff(   ##  best performence
         optimizer.step()
         losses.append(loss.item())
 
-        # 计算并记录指标
+        # # 计算并记录指标
         with torch.no_grad():
             metrics = compute_metrics(
-                sample=x_k,
-                ref_img=ref_img,
-                out_path=out_path,
-                device=device,
-                loss_fn_alex=loss_fn_alex,
-                metrics=None  # 初次调用时不传递 metrics，函数会自动初始化
-            )
+            sample=sample,
+            ref_img=ref_img,
+            out_path=out_path,
+            device=device,
+            loss_fn_alex=loss_fn_alex,
+            epoch=epoch,
+            iteration=iteration,
+            metrics=None  # 初次调用时不传递 metrics，函数会自动初始化
+        )
 
         # # 早停机制
         # mean_val = np.mean(output_numpy)
@@ -1460,7 +1464,7 @@ def DPS(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_seed
 
 
 
-def compute_metrics(sample, ref_img, out_path, device, loss_fn_alex, metrics=None):
+def compute_metrics(sample, ref_img, out_path, device, loss_fn_alex, epoch,iteration, metrics=None):
     """
     初始化指标列表和最佳图像变量，计算 PSNR、SSIM 和 LPIPS 指标，保存结果到 CSV 文件，并跟踪最佳图像。
     
@@ -1507,13 +1511,15 @@ def compute_metrics(sample, ref_img, out_path, device, loss_fn_alex, metrics=Non
     
     # 将结果写入 CSV 文件
     file_path = os.path.join(out_path, "metrics_curve.csv")
+    # 如果 iteration 达到指定值，则清空文件内容
     with open(file_path, mode="a", newline="") as file:
         writer = csv.writer(file)
         # 在文件为空时添加标题行
         if os.path.getsize(file_path) == 0:
             writer.writerow(["PSNR", "SSIM", "LPIPS"])
         writer.writerow([tmp_psnr, tmp_ssim, lpips_alex])
-    
+    if epoch == iteration-1:  # 替换 YOUR_THRESHOLD 为你希望的 iteration 阈值
+        open(file_path, 'w').close()  # 清空文件
     return metrics
     
 
