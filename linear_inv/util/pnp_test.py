@@ -13,6 +13,133 @@ import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
 
+class EarlyStopping:
+    def __init__(self, patience=40, min_delta=0, verbose=False):
+        """
+        初始化早停策略
+        
+        参数：
+        - patience: 等待多少个 epoch 后，如果验证指标不再改善，则停止训练。
+        - min_delta: 允许的最小变化量，低于该变化量时不认为是改进。
+        - verbose: 是否打印早停信息。
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+
+    def __call__(self, metric):
+        """
+        调用时，检查当前的指标是否足够好来更新最优指标。
+        """
+        if self.best_score is None:
+            self.best_score = metric
+        elif metric < self.best_score - self.min_delta:
+            self.best_score = metric
+            self.counter = 0  # reset counter if metric improves
+        else:
+            self.counter += 1  # increase counter if no improvement
+
+        if self.counter >= self.patience:
+            self.early_stop = True
+            if self.verbose:
+                print(f"Early stopping triggered after {self.counter} epochs without improvement.")
+
+    def stop_training(self):
+        return self.early_stop
+
+def log_metrics_to_tensorboard(writer, metrics, step, img_index=None, prefix=''):
+    """将指标记录到TensorBoard
+    
+    参数:
+        writer: TensorBoard SummaryWriter对象
+        metrics: 包含指标值的字典
+        step: 训练步骤
+        img_index: 可选的图像索引，用于区分不同图像
+        prefix: 指标名称前缀
+    """
+    # 为每个指标添加适当的前缀（如果提供）
+    tag_prefix = f"{prefix}/" if prefix else ""
+    
+    # 如果提供了图像索引，在标签中加入图像索引
+    if img_index is not None:
+        for metric_name, value in metrics.items():
+            writer.add_scalar(f"{tag_prefix}{metric_name}/image_{img_index}", value, step)
+    else:
+        # 没有图像索引，直接记录指标
+        for metric_name, value in metrics.items():
+            writer.add_scalar(f"{tag_prefix}{metric_name}", value, step)
+            
+def compute_metrics(
+    sample, ref_img, out_path, device, loss_fn_alex, epoch=None, iteration=None, metrics=None
+):
+    """
+    计算PSNR、SSIM和LPIPS指标，保存结果到CSV文件，并记录最佳图像。
+    
+    参数:
+        sample (torch.Tensor): 当前的采样结果张量。
+        ref_img (torch.Tensor): 参考图像张量。
+        out_path (str): 指标CSV文件保存路径。
+        device (torch.device): 设备，通常为'cuda'或'cpu'。
+        loss_fn_alex (lpips.LPIPS): LPIPS计算的损失函数。
+        epoch (int, optional): 当前的epoch，用于记录进度。
+        iteration (int, optional): 总迭代次数，用于清空文件等操作。
+        metrics (dict, optional): 包含指标列表的字典，若为None，则自动初始化。
+    
+    返回:
+        dict: 更新后的包含PSNR、SSIM、LPIPS列表
+    """
+    # 初始化指标列表（如果未提供）
+    if metrics is None:
+        metrics = {
+            'psnr': [],
+            'ssim': [],
+            'lpips': [],
+        }
+
+    # 转换为numpy格式计算指标
+    ref_numpy = ref_img.cpu().squeeze().numpy()
+    output_numpy = sample.detach().cpu().squeeze().numpy().transpose(1, 2, 0)
+    ref_numpy_cal = ref_numpy.transpose(1, 2, 0)
+
+    # 计算PSNR
+    tmp_psnr = peak_signal_noise_ratio(ref_numpy_cal, output_numpy)
+    metrics['psnr'].append(tmp_psnr)
+
+    # 计算SSIM
+    tmp_ssim = structural_similarity(ref_numpy_cal, output_numpy, channel_axis=2, data_range=1)
+    metrics['ssim'].append(tmp_ssim)
+
+    # 计算LPIPS
+    rec_img_torch = torch.from_numpy(output_numpy).permute(2, 0, 1).unsqueeze(0).float().to(device)
+    gt_img_torch = torch.from_numpy(ref_numpy_cal).permute(2, 0, 1).unsqueeze(0).float().to(device)
+    lpips_alex = loss_fn_alex(gt_img_torch, rec_img_torch).item()
+    metrics['lpips'].append(lpips_alex)
+
+    # 确保输出目录存在
+    os.makedirs(out_path, exist_ok=True)
+    
+    # 将结果写入CSV文件
+    file_path = os.path.join(out_path, "metrics_curve.csv")
+    # 如果文件不存在或epoch是第一个epoch，则写入标题行
+    file_exists = os.path.exists(file_path) and os.path.getsize(file_path) > 0
+    
+    with open(file_path, mode="a", newline="") as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(["Epoch", "PSNR", "SSIM", "LPIPS"])
+        writer.writerow([epoch if epoch is not None else len(metrics['psnr']), tmp_psnr, tmp_ssim, lpips_alex])
+    
+    # 在最后一个epoch后清空文件以便下一个图像使用
+    if epoch is not None and iteration is not None and epoch == iteration - 1:
+        open(file_path, 'w').close()  # 清空文件
+    
+    return metrics
+
+
+
 def DMPlug(
     model,
     sampler,
@@ -25,168 +152,264 @@ def DMPlug(
     model_config,
     measure_config,
     fname,
-    early_stopping_threshold=0.01,  # 统计特性变化的阈值
-    stop_patience=5,  
+    early_stopping_threshold=0.01,
+    stop_patience=5,
     out_path="outputs",
     iteration=2000,
     lr=0.02,
     denoiser_step=3,
     mask=None,
     random_seed=None,
-    writer=None
+    writer=None,
+    img_index=None
 ):
-    # 使用传入的随机种子重新设置随机种子
-    torch.manual_seed(random_seed)
-    torch.cuda.manual_seed(random_seed)
-    torch.cuda.manual_seed_all(random_seed)
-    # Initialize variables and tensors
+    """
+    DMPlug算法：使用扩散模型作为先验，通过迭代优化重建图像。
+    
+    Parameters:
+    - model: 扩散模型
+    - sampler: 扩散采样器
+    - measurement_cond_fn: 测量条件函数
+    - ref_img: 参考图像张量
+    - y_n: 带噪声的测量张量
+    - args: 命令行参数
+    - operator: 测量算子
+    - device: 设备
+    - model_config: 模型配置
+    - measure_config: 测量配置
+    - fname: 输出文件名
+    - early_stopping_threshold: 早停阈值
+    - stop_patience: 早停耐心值
+    - out_path: 输出路径
+    - iteration: 迭代次数
+    - lr: 学习率
+    - denoiser_step: 去噪步数
+    - mask: 掩码（可选）
+    - random_seed: 随机种子
+    - writer: TensorBoard SummaryWriter对象
+    - img_index: 图像索引
+    
+    Returns:
+    - sample: 重建的图像
+    - metrics: 包含PSNR、SSIM和LPIPS的指标字典
+    """
+    # 设置随机种子
+    if random_seed is not None:
+        torch.manual_seed(random_seed)
+        torch.cuda.manual_seed(random_seed)
+        torch.cuda.manual_seed_all(random_seed)
+    
+    # TensorBoard记录超参数和初始状态
+    if writer is not None and img_index is not None:
+        writer.add_text(f'DMPlug/Image_{img_index}/Config', 
+                       f'Iterations: {iteration}\n'
+                       f'Learning Rate: {lr}\n'
+                       f'Denoiser Steps: {denoiser_step}\n'
+                       f'Early Stopping: threshold={early_stopping_threshold}, patience={stop_patience}\n'
+                       f'Random Seed: {random_seed}', 0)
+        
+        # 记录参考图像和测量图像
+        writer.add_image(f'DMPlug/Image_{img_index}/Reference', (ref_img[0] + 1)/2, 0)
+        writer.add_image(f'DMPlug/Image_{img_index}/Measurement', (y_n[0] + 1)/2, 0)
+    
+    # 初始化变量
     Z = torch.randn((1, 3, model_config['image_size'], model_config['image_size']), device=device, requires_grad=True)
     optimizer = torch.optim.Adam([{'params': Z, 'lr': lr}])
     loss_fn_alex = lpips.LPIPS(net='alex').to(device)
     criterion = torch.nn.MSELoss().to(device)
     l1_loss = torch.nn.L1Loss()
+    
+    # 记录初始随机噪声
+    if writer is not None and img_index is not None:
+        writer.add_image(f'DMPlug/Image_{img_index}/Initial_Noise', (Z[0] + 1)/2, 0)
 
+    # 用于记录指标和优化过程
+    losses = []
+    psnrs = []
+    ssims = []
+    lpipss = []
+    mean_changes = []  # 记录均值变化
+    best_psnr = 0
+    best_img = None
+    best_epoch = 0
     
-    psnrs, ssims, losses, lpipss, recent_psnrs = [], [], [], [], []
-    mean_changes, var_changes = [], []  # 记录均值和方差的变化
-    
-    # Training loop
-    for epoch in tqdm(range(iteration), desc="Training Epochs"):
+    # 主优化循环
+    for epoch in tqdm(range(iteration), desc="DMPlug Optimization"):
         model.eval()
         optimizer.zero_grad()
-
         
+        # 应用扩散模型的去噪过程
+        sample = Z
         for i, t in enumerate(list(range(denoiser_step))[::-1]):
             time = torch.tensor([t] * ref_img.shape[0], device=device)
             if i == 0:
-                sample, pred_start = sampler.p_sample(model=model, x=Z, t=time, measurement=y_n, measurement_cond_fn=measurement_cond_fn, mask =mask)
+                sample, pred_start = sampler.p_sample(
+                    model=model, x=sample, t=time, measurement=y_n, 
+                    measurement_cond_fn=measurement_cond_fn, mask=mask
+                )
             else:
-                sample, pred_start = sampler.p_sample(model=model, x=sample, t=time, measurement=y_n, measurement_cond_fn=measurement_cond_fn, mask =mask)
+                sample, pred_start = sampler.p_sample(
+                    model=model, x=sample, t=time, measurement=y_n,
+                    measurement_cond_fn=measurement_cond_fn, mask=mask
+                )
         
-        # Loss calculation
+        # 计算损失
         if mask is not None:
-        # loss = criterion(operator.forward(x_t), y_n)
             loss = criterion(operator.forward(sample, mask=mask), y_n)
-        else:            
+        else:
             loss = criterion(operator.forward(sample), y_n)
-
+        
+        # 反向传播和优化
         loss.backward(retain_graph=True)
         optimizer.step()
         losses.append(loss.item())
         
-        
+        # 计算当前重建的评价指标
         with torch.no_grad():
-            best_img_np = x_k.cpu().squeeze().detach().numpy().transpose(1, 2, 0)
+            current_img_np = sample.cpu().squeeze().detach().numpy().transpose(1, 2, 0)
             ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
-
-            final_psnr = peak_signal_noise_ratio(ref_img_np, best_img_np)
-            final_ssim = structural_similarity(ref_img_np, best_img_np, channel_axis=2, data_range=1)
-            best_img_torch = torch.from_numpy(best_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
+            
+            # 计算PSNR
+            current_psnr = peak_signal_noise_ratio(ref_img_np, current_img_np)
+            psnrs.append(current_psnr)
+            
+            # 计算SSIM
+            current_ssim = structural_similarity(ref_img_np, current_img_np, channel_axis=2, data_range=1)
+            ssims.append(current_ssim)
+            
+            # 计算LPIPS
+            current_img_torch = torch.from_numpy(current_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
             ref_img_torch = torch.from_numpy(ref_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
-            final_lpips = loss_fn_alex(ref_img_torch, best_img_torch).item()
-
-            # 记录指标到 TensorBoard
-            metrics = {
-                'Loss': loss.item(),
-                'PSNR': final_psnr,
-                'SSIM': final_ssim,
-                'LPIPS': final_lpips
-            }
-            if writer is not None:
-                log_metrics_to_tensorboard(writer, metrics, epoch)
-                  # 保存结果和图像
-        plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(x_k))
-        plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
-        plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
-
-    # 结束时关闭 TensorBoard 记录器
-    if writer is not None:
-        writer.close()
-
-    # 返回最后的结果
+            current_lpips = loss_fn_alex(ref_img_torch, current_img_torch).item()
+            lpipss.append(current_lpips)
+            
+            # 记录图像均值变化，用于早停
+            mean_val = np.mean(current_img_np)
+            mean_changes.append(mean_val)
+            
+            # 记录最佳PSNR图像
+            if current_psnr > best_psnr:
+                best_psnr = current_psnr
+                best_img = sample.clone()
+                best_epoch = epoch
+            
+            # TensorBoard记录
+            if writer is not None and img_index is not None:
+                # 每个epoch记录损失和指标
+                writer.add_scalar(f'DMPlug/Image_{img_index}/Training/Loss', loss.item(), epoch)
+                writer.add_scalar(f'DMPlug/Image_{img_index}/Metrics/PSNR', current_psnr, epoch)
+                writer.add_scalar(f'DMPlug/Image_{img_index}/Metrics/SSIM', current_ssim, epoch)
+                writer.add_scalar(f'DMPlug/Image_{img_index}/Metrics/LPIPS', current_lpips, epoch)
+                
+                # 每隔一定轮数记录图像
+                if epoch % 100 == 0 or epoch == iteration - 1:
+                    writer.add_image(f'DMPlug/Image_{img_index}/Reconstruction/Epoch_{epoch}', 
+                                   (sample[0] + 1)/2, epoch)
+                
+                # 记录最佳PSNR图像
+                if current_psnr == best_psnr:
+                    writer.add_image(f'DMPlug/Image_{img_index}/Best/Reconstruction', 
+                                   (best_img[0] + 1)/2, epoch)
+                    writer.add_scalar(f'DMPlug/Image_{img_index}/Best/PSNR', best_psnr, epoch)
+        
+        # 早停检查
+        if epoch > stop_patience:
+            recent_changes = mean_changes[-stop_patience:]
+            if all(abs(recent_changes[i] - recent_changes[i-1]) < early_stopping_threshold 
+                  for i in range(1, len(recent_changes))):
+                print(f"Early stopping triggered at epoch {epoch+1}")
+                if writer is not None and img_index is not None:
+                    writer.add_text(f'DMPlug/Image_{img_index}/EarlyStopping', 
+                                   f'Stopped at epoch {epoch+1} due to stability in image mean', 0)
+                break
+    
+    # 如果没有找到最佳图像，使用最后一个
+    if best_img is None:
+        best_img = sample
+    
+    # 保存结果和可视化
+    if writer is not None and img_index is not None:
+        # 绘制损失曲线
+        fig, axs = plt.subplots(2, 2, figsize=(15, 10))
+        
+        # 损失曲线
+        axs[0, 0].plot(losses)
+        axs[0, 0].set_title('Loss Curve')
+        axs[0, 0].set_xlabel('Epoch')
+        axs[0, 0].set_ylabel('Loss')
+        
+        # PSNR曲线
+        axs[0, 1].plot(psnrs)
+        axs[0, 1].set_title('PSNR Curve')
+        axs[0, 1].set_xlabel('Epoch')
+        axs[0, 1].set_ylabel('PSNR (dB)')
+        
+        # SSIM曲线
+        axs[1, 0].plot(ssims)
+        axs[1, 0].set_title('SSIM Curve')
+        axs[1, 0].set_xlabel('Epoch')
+        axs[1, 0].set_ylabel('SSIM')
+        
+        # LPIPS曲线
+        axs[1, 1].plot(lpipss)
+        axs[1, 1].set_title('LPIPS Curve')
+        axs[1, 1].set_xlabel('Epoch')
+        axs[1, 1].set_ylabel('LPIPS')
+        
+        plt.tight_layout()
+        
+        # 保存并添加到TensorBoard
+        curves_path = os.path.join(out_path, f'dmplug_curves_{img_index}.png')
+        plt.savefig(curves_path)
+        plt.close()
+        
+        curves_img = plt.imread(curves_path)
+        writer.add_image(f'DMPlug/Image_{img_index}/Curves', 
+                       torch.from_numpy(curves_img).permute(2, 0, 1), 0)
+        
+        # 记录误差图
+        error_map = torch.abs(ref_img - best_img)
+        error_map = error_map / error_map.max()  # 归一化误差
+        writer.add_image(f'DMPlug/Image_{img_index}/Error_Map', error_map[0], 0)
+        
+        # 记录最终状态
+        writer.add_text(f'DMPlug/Image_{img_index}/Results', 
+                       f'Best PSNR: {best_psnr:.4f} at epoch {best_epoch}\n'
+                       f'Final Loss: {losses[-1]:.6f}\n', 0)
+    
+    # 保存最终图像
+    plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(best_img))
+    plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
+    plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
+    
+    # 计算最终指标
+    best_img_np = best_img.cpu().squeeze().detach().numpy().transpose(1, 2, 0)
+    ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
+    
+    final_psnr = peak_signal_noise_ratio(ref_img_np, best_img_np)
+    final_ssim = structural_similarity(ref_img_np, best_img_np, channel_axis=2, data_range=1)
+    
+    best_img_torch = torch.from_numpy(best_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
+    ref_img_torch = torch.from_numpy(ref_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
+    final_lpips = loss_fn_alex(ref_img_torch, best_img_torch).item()
+    
+    # 记录最终指标
     final_metric = {
         'psnr': final_psnr,
         'ssim': final_ssim,
         'lpips': final_lpips
     }
-
-    print(f"Final metrics between best reconstructed image and reference image:")
+    
+    # 记录到TensorBoard
+    if writer is not None and img_index is not None:
+        writer.add_scalar(f'DMPlug/Image_{img_index}/Final/PSNR', final_psnr, 0)
+        writer.add_scalar(f'DMPlug/Image_{img_index}/Final/SSIM', final_ssim, 0)
+        writer.add_scalar(f'DMPlug/Image_{img_index}/Final/LPIPS', final_lpips, 0)
+    
+    print(f"Final metrics between reconstructed image and reference image:")
     print(f"PSNR: {final_psnr:.4f}, SSIM: {final_ssim:.4f}, LPIPS: {final_lpips:.4f}")
-        
-        # with torch.no_grad():
-        #     metrics = compute_metrics(
-        #     sample=sample,
-        #     ref_img=ref_img,
-        #     out_path=out_path,
-        #     device=device,
-        #     loss_fn_alex=loss_fn_alex,
-        #     epoch=epoch,
-        #     iteration=iteration,
-        #     metrics=None  # 初次调用时不传递 metrics，函数会自动初始化
-        # )
-
-                
-            # # Statistical characteristic-based early stopping
-            # mean_val = np.mean(output_numpy)
-            
-            # if epoch > 0:  # 从第二轮开始计算变化率
-            #     # 记录当前均值
-            #     mean_changes.append(mean_val)
-
-            #         # 如果变化率在一定窗口内小于阈值，则早停
-            #     if len(mean_changes) >= stop_patience:
-            #         recent_mean_changes = mean_changes[-stop_patience:]
-            #         if all(change < early_stopping_threshold for change in recent_mean_changes):
-            #             print(f"Early stopping triggered after {epoch + 1} epochs due to mean stability.")
-            #             break
-            # else:
-            #     # 初始记录第一轮的均值
-            #     mean_changes.append(mean_val)
-
-    # Save results
-    # Z_np = (Z.detach().cpu().numpy().squeeze(0)).clip(0, 1)
-    # plt.imsave(os.path.join(out_path, 'Z_image.png'), Z_np.transpose(1, 2, 0))
-    # plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample))
-
-    # # Plot losses
-    # plt.plot(losses, label='Loss')
-    # plt.legend()
-    # plt.savefig(os.path.join(out_path, f"loss_{fname.split('.')[0]}.png"))    
-
-    # # Plot PSNR values
-    # plt.plot(metrics['psnr'])
-    # plt.savefig(os.path.join(out_path, 'psnr.png'))
-    # plt.close()
     
-    # plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
-    # plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
-    
-    
-    # 转换最佳图像和参考图像为 numpy 格式
-    # best_img_np = sample.cpu(、).squeeze().detach().numpy().transpose(1, 2, 0) 
-    # ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
-
-    # 计算 PSNR
-    # final_psnr = peak_signal_noise_ratio(ref_img_np, best_img_np)
-    # 计算 SSIM
-    # final_ssim = structural_similarity(ref_img_np, best_img_np, channel_axis=2, data_range=1)
-    # 计算 LPIPS
-    # best_img_torch = torch.from_numpy(best_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
-    # ref_img_torch = torch.from_numpy(ref_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
-    # final_lpips = loss_fn_alex(ref_img_torch, best_img_torch).item()
-
-    #  # 将结果组织到字典中
-    # final_metric = {
-    #     'psnr': final_psnr,
-    #     'ssim': final_ssim,
-    #     # 'lpips': final_lpips
-    # }
-    
-    # 打印最终的 PSNR, SSIM, LPIPS
-    # print(f"Final metrics between best reconstructed image and reference image:")
-    # print(f"PSNR: {final_psnr:.4f}, SSIM: {final_ssim:.4f}, LPIPS: {final_lpips:.4f}")
-    
-    return sample , final_metric
+    return best_img, final_metric
 
 
 def DMPlug_turbulence(

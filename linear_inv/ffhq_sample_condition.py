@@ -12,7 +12,7 @@ from guided_diffusion.measurements import get_noise, get_operator
 from guided_diffusion.unet import create_model
 from guided_diffusion.guided_gaussian_diffusion import create_sampler, space_timesteps
 from data.dataloader import get_dataset, get_dataloader
-from util.img_utils import clear_color, mask_generator, normalize_np, Blurkernel ,generate_tilt_map
+from util.img_utils import clear_color, mask_generator, normalize_np, Blurkernel, generate_tilt_map
 from util.logger import get_logger
 from util.tools import early_stopping
 import torchvision
@@ -152,6 +152,25 @@ def main():
     writer.add_text('Experiment/Noise_Scale', str(args.noise_scale))
     writer.add_text('Experiment/Iterations', str(args.iter))
     writer.add_text('Experiment/Timesteps', str(args.timestep))
+    
+    # 记录超参数到TensorBoard
+    hyperparams = {
+        'algorithm': args.algo,
+        'noise_type': args.noise_type,
+        'noise_scale': args.noise_scale,
+        'iterations': args.iter,
+        'timesteps': args.timestep,
+        'eta': args.eta,
+        'scale': args.scale,
+        'iter_step': args.iter_step,
+        'method': args.method
+    }
+    writer.add_hparams(hyperparams, {})
+    
+    # 添加模型和数据配置
+    writer.add_text('Config/Model', str(model_config))
+    writer.add_text('Config/Diffusion', str(diffusion_config))
+    writer.add_text('Config/Task', str(task_config))
         
     #### Do Inference
     for i, ref_img in enumerate(loader):
@@ -160,6 +179,9 @@ def main():
         logger.info(f"Inference for image {i}")
         fname = f'{i:03}.png'
         ref_img = ref_img.to(device)
+        
+        # 记录原始参考图像到TensorBoard
+        writer.add_image(f'Original/Image_{i}', (ref_img[0] + 1) / 2, i)
         
         # Exception) In case of inpainting
         if measure_config['operator']['name'] == 'inpainting':
@@ -172,6 +194,10 @@ def main():
             # Forward measurement model (Ax + n)
             y = operator.forward(ref_img, mask=mask)
             y_n = noiser(y.to(device))
+            
+            # 记录掩码到TensorBoard
+            writer.add_image(f'Masks/Image_{i}', mask[0], i)
+            
         elif measure_config['operator']['name'] == 'turbulence':
             mask = None
             img_size = ref_img.shape[-1]
@@ -187,6 +213,11 @@ def main():
             y = operator.forward(ref_img, kernel, tilt)
         
             y_n = noiser(y).to(device)    
+            
+            # 记录扰动地图和核到TensorBoard
+            writer.add_image(f'Turbulence/Tilt_Map_{i}', tilt[0][0], i)
+            writer.add_image(f'Turbulence/Kernel_{i}', kernel[0][0], i)
+            
         else:
             mask = None
             y = operator.forward(ref_img)
@@ -204,9 +235,8 @@ def main():
         random_seed = 42
         set_seed(random_seed)
         
-        # 为当前图像记录图像到TensorBoard
-        writer.add_image(f'Images/Original_{i}', ref_img[0], i)
-        writer.add_image(f'Images/Measurement_{i}', y_n[0], i)
+        # 为当前图像记录测量结果到TensorBoard
+        writer.add_image(f'Measurements/Image_{i}', (y_n[0] + 1) / 2, i)
 
         # 根据传入的算法选择执行
         if args.algo == 'dmplug':
@@ -221,6 +251,9 @@ def main():
             execution_time = end_time - start_time
             execution_times.append(execution_time)
             print(f"DMPlug execution for image {i} took {execution_time:.2f} seconds.")
+            
+            # 记录执行时间到TensorBoard
+            writer.add_scalar('Performance/ExecutionTime', execution_time, i)
         
         elif args.algo == 'dmplug_turbulence':
             start_time = time.time()
@@ -234,6 +267,7 @@ def main():
             execution_time = end_time - start_time
             execution_times.append(execution_time)
             print(f"DMPlug_turbulence execution for image {i} took {execution_time:.2f} seconds.")
+            writer.add_scalar('Performance/ExecutionTime', execution_time, i)
             
         elif args.algo == 'acce_ours':
             start_time = time.time()
@@ -247,6 +281,7 @@ def main():
             execution_time = end_time - start_time
             execution_times.append(execution_time)
             print(f"acce_DMPlug execution for image {i} took {execution_time:.2f} seconds.")
+            writer.add_scalar('Performance/ExecutionTime', execution_time, i)
             
         elif args.algo == 'mpgd':
             start_time = time.time()
@@ -259,6 +294,7 @@ def main():
             execution_time = end_time - start_time
             execution_times.append(execution_time)
             print(f"mpgd execution for image {i} took {execution_time:.2f} seconds.")
+            writer.add_scalar('Performance/ExecutionTime', execution_time, i)
             
         elif args.algo == 'RED_diff':
             start_time = time.time()
@@ -272,6 +308,7 @@ def main():
             execution_time = end_time - start_time
             execution_times.append(execution_time)
             print(f"RED_diff execution for image {i} took {execution_time:.2f} seconds.")
+            writer.add_scalar('Performance/ExecutionTime', execution_time, i)
 
         elif args.algo == 'acce_RED_diff':
             start_time = time.time()
@@ -285,6 +322,7 @@ def main():
             execution_time = end_time - start_time
             execution_times.append(execution_time)
             print(f"acce_RED_diff execution for image {i} took {execution_time:.2f} seconds.")
+            writer.add_scalar('Performance/ExecutionTime', execution_time, i)
 
         elif args.algo == 'acce_RED_diff_turbulence':
             start_time = time.time()
@@ -298,6 +336,7 @@ def main():
             execution_time = end_time - start_time
             execution_times.append(execution_time)
             print(f"acce_RED_diff_turbulence execution for image {i} took {execution_time:.2f} seconds.")
+            writer.add_scalar('Performance/ExecutionTime', execution_time, i)
             
         elif args.algo == 'dps':
             start_time = time.time()
@@ -309,6 +348,7 @@ def main():
             execution_time = end_time - start_time
             execution_times.append(execution_time)
             print(f"dps execution for image {i} took {execution_time:.2f} seconds.")
+            writer.add_scalar('Performance/ExecutionTime', execution_time, i)
 
         elif args.algo == 'acce_RED_earlystop':
             start_time = time.time()
@@ -322,6 +362,10 @@ def main():
             execution_time = end_time - start_time
             execution_times.append(execution_time)
             print(f"acce_RED_earlystop execution for image {i} took {execution_time:.2f} seconds.")
+            writer.add_scalar('Performance/ExecutionTime', execution_time, i)
+            
+        # 记录重建结果到TensorBoard
+        writer.add_image(f'Reconstructions/Image_{i}', (sample[0] + 1) / 2, i)
             
         # 记录返回的指标
         psnrs_list.append(metrics['psnr'])
@@ -336,18 +380,69 @@ def main():
         writer.add_scalar('Metrics/SSIM_per_image', metrics['ssim'], i)
         writer.add_scalar('Metrics/LPIPS_per_image', metrics['lpips'], i)
         
+        # 在TensorBoard中记录每张图像的误差图像 (ref_img vs sample)
+        error_map = torch.abs(ref_img - sample)
+        error_map = error_map / error_map.max() # 归一化误差
+        writer.add_image(f'ErrorMaps/Image_{i}', error_map[0], i)
+        
     # 在所有图像处理完成后，记录平均指标
     avg_psnr = np.mean(psnrs_list)
     avg_ssim = np.mean(ssims_list)
     avg_lpips = np.mean(lpipss_list)
+    std_psnr = np.std(psnrs_list)
+    std_ssim = np.std(ssims_list)
+    std_lpips = np.std(lpipss_list)
     
     writer.add_scalar('Metrics/Avg_PSNR', avg_psnr, 0)
     writer.add_scalar('Metrics/Avg_SSIM', avg_ssim, 0)
     writer.add_scalar('Metrics/Avg_LPIPS', avg_lpips, 0)
+    writer.add_scalar('Metrics/Std_PSNR', std_psnr, 0)
+    writer.add_scalar('Metrics/Std_SSIM', std_ssim, 0)
+    writer.add_scalar('Metrics/Std_LPIPS', std_lpips, 0)
+    
+    # 通过箱形图和直方图展示指标分布
+    fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+    ax[0].boxplot(psnrs_list)
+    ax[0].set_title('PSNR Distribution')
+    ax[1].boxplot(ssims_list)
+    ax[1].set_title('SSIM Distribution')
+    ax[2].boxplot(lpipss_list)
+    ax[2].set_title('LPIPS Distribution')
+    plt.tight_layout()
+    
+    # 保存为本地文件并添加到TensorBoard
+    plt.savefig(os.path.join(out_path, 'metric_distributions.png'))
+    img = torchvision.transforms.ToTensor()(plt.imread(os.path.join(out_path, 'metric_distributions.png')))
+    writer.add_image('Distributions/Boxplots', img, 0)
+    plt.close()
     
     # 记录平均执行时间
     avg_execution_time = np.mean(execution_times) if execution_times else 0
     writer.add_scalar('Performance/Avg_Execution_Time', avg_execution_time, 0)
+    
+    # 将图像的PSNR, SSIM, LPIPS值绘制为条形图并添加到TensorBoard
+    fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+    x = list(range(len(psnrs_list)))
+    ax[0].bar(x, psnrs_list)
+    ax[0].set_title('PSNR per Image')
+    ax[0].set_xlabel('Image Index')
+    ax[0].set_ylabel('PSNR (dB)')
+    
+    ax[1].bar(x, ssims_list)
+    ax[1].set_title('SSIM per Image')
+    ax[1].set_xlabel('Image Index')
+    ax[1].set_ylabel('SSIM')
+    
+    ax[2].bar(x, lpipss_list)
+    ax[2].set_title('LPIPS per Image')
+    ax[2].set_xlabel('Image Index')
+    ax[2].set_ylabel('LPIPS')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_path, 'metrics_per_image.png'))
+    img = torchvision.transforms.ToTensor()(plt.imread(os.path.join(out_path, 'metrics_per_image.png')))
+    writer.add_image('Distributions/Metrics_per_Image', img, 0)
+    plt.close()
     
     # 在训练结束时关闭 SummaryWriter
     writer.close()
@@ -361,13 +456,13 @@ def main():
     # 关闭 CSV 文件
     csv_file.close()
     # 计算并打印平均值
-    print(f"Average PSNR: {avg_psnr:.4f}, Average SSIM: {avg_ssim:.4f}, Average LPIPS: {avg_lpips:.4f}")
+    print(f"Average PSNR: {avg_psnr:.4f} ± {std_psnr:.4f}")
+    print(f"Average SSIM: {avg_ssim:.4f} ± {std_ssim:.4f}")
+    print(f"Average LPIPS: {avg_lpips:.4f} ± {std_lpips:.4f}")
     
     # 输出TensorBoard查看指令
     print(f"\nTo view the TensorBoard logs, run:")
     print(f"tensorboard --logdir={tb_log_dir}")
-    
-    
     
 if __name__ == '__main__':
     main()
