@@ -56,7 +56,28 @@ class ConditioningMethod(ABC):
             difference = measurement - self.operator.forward(x_0_hat, **kwargs)
             norm = torch.linalg.norm(difference)
             norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0]
-        
+            
+        elif self.noiser.__name__ == 'impulse':
+            # 脉冲噪声
+            Ax = self.operator.forward(x_0_hat, **kwargs)
+            difference = measurement - Ax
+            # 使用 L1 范数（更适用于稀疏噪声）
+            norm = torch.linalg.norm(difference)
+            norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0]
+            
+        elif self.noiser.__name__ == 'shot':
+            # 泊松噪声
+            Ax = self.operator.forward(x_0_hat, **kwargs)
+            difference = measurement - Ax
+            norm = torch.linalg.norm(difference)
+            norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0]    
+        elif self.noiser.__name__ == 'speckle':
+            # 散斑噪声
+            Ax = self.operator.forward(x_0_hat, **kwargs)
+            difference = measurement - Ax
+            # 使用均方误差（MSE）作为损失函数
+            norm = torch.linalg.norm(difference)
+            norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0]
         elif self.noiser.__name__ == 'poisson':
             Ax = self.operator.forward(x_0_hat, **kwargs)
             difference = measurement-Ax

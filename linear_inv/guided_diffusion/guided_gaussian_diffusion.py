@@ -8,7 +8,7 @@ from tqdm.auto import tqdm
 
 from util.img_utils import clear_color
 from .posterior_mean_variance import get_mean_processor, get_var_processor
-
+from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 
 __SAMPLER__ = {}
@@ -479,32 +479,53 @@ class DDIMx0(SpacedDiffusion):
     
     @torch.no_grad()
     def p_sample_loop(self,
-                      model,
-                      x_start,
-                      measurement,
-                      measurement_cond_fn,
-                      record,
-                      save_root,
-                      mask = None,
-                      ):
+                 model,
+                 x_start,
+                 measurement,
+                 measurement_cond_fn,
+                 record,
+                 save_root,
+                 mask=None,
+                 ref_img=None,
+                 writer=None,
+                 img_index=None):
         """
         The function used for sampling from noise.
-        """ 
+        
+        Parameters:
+        - model: 扩散模型
+        - x_start: 初始噪声图像
+        - measurement: 测量数据
+        - measurement_cond_fn: 引导函数
+        - record: 是否记录中间结果
+        - save_root: 保存路径
+        - mask: 可选掩码
+        - ref_img: 参考图像，用于计算指标
+        - writer: TensorBoard SummaryWriter对象
+        - img_index: 当前处理的图像索引, 用于TensorBoard日志
+        """
+        
         eta = self.eta
         img = x_start
         device = x_start.device
         model.eval()
-
+        
+        # 转换图像索引为整数，默认为0
+        if img_index is None:
+            img_index = 0
+        else:
+            img_index = int(img_index)
+        
+        
         pbar = tqdm(list(range(self.num_timesteps))[::-1])
-        for idx in pbar:
+        for step_idx, idx in enumerate(pbar):
             time = torch.tensor([idx] * img.shape[0], device=device)
-            t=time
-            x=img
+            t = time
+            x = img
             
             out = self.p_mean_variance(model, x, t)
-
+            
             eps = self.predict_eps_from_x_start(x, t, out['pred_xstart'])
-
             alpha_bar = extract_and_expand(self.alphas_cumprod, t, x)
             alpha_bar_prev = extract_and_expand(self.alphas_cumprod_prev, t, x)
             sigma = (
@@ -517,9 +538,9 @@ class DDIMx0(SpacedDiffusion):
             with torch.enable_grad():
                 x_0_hat = x_0_hat.requires_grad_()
                 x0_t, distance = measurement_cond_fn(measurement=measurement,
-                                          x_0_hat=x_0_hat,
-                                          at=alpha_bar_prev,
-                                          t=t/self.num_timesteps)
+                                    x_0_hat=x_0_hat,
+                                    at=alpha_bar_prev,
+                                    t=t/self.num_timesteps)
             
             out["pred_xstart"] = x0_t
             
@@ -529,26 +550,41 @@ class DDIMx0(SpacedDiffusion):
                 out["pred_xstart"] * torch.sqrt(alpha_bar_prev)
                 + torch.sqrt(1 - alpha_bar_prev - sigma ** 2) * eps
             )
-
+            
             img = mean_pred
             if t != 0:
                 img += sigma * noise
             img = img.detach_()
-           
+            
             # if mask is not None:
             #     ori_in = measurement
             #     img_orig = alpha_bar_prev.sqrt() * ori_in + torch.sqrt(1 - alpha_bar_prev - sigma ** 2) * eps
             #     img = img_orig * mask + (1. - mask) * img
             
-            
             pbar.set_postfix({'distance': distance.item()}, refresh=False)
-            if record:
-                if idx % 10 == 0:
-                    file_path = os.path.join(save_root, f"progress/x_{str(idx).zfill(4)}.png")
-                    plt.imsave(file_path, clear_color(img))
-
-        return img       
-
+            
+            if ref_img is not None and writer is not None:  # 确保ref_img和writer都被传入
+                # 计算当前全局步骤 = 图像基准步骤 + 当前步骤
+                img_np = img.cpu().squeeze().detach().numpy().transpose(1, 2, 0)
+                ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
+                
+                # 计算 PSNR
+                current_psnr = peak_signal_noise_ratio(ref_img_np, img_np)
+                
+                # 计算 Loss (MSE loss)
+                loss = torch.nn.functional.mse_loss(img, ref_img)
+                
+                # 记录到 TensorBoard，使用步骤索引
+                writer.add_scalar(f'PSNR/denoising/image_{img_index}', current_psnr, step_idx)
+                writer.add_scalar(f'Loss/denoising/image_{img_index}', loss.item(), step_idx)
+                writer.add_scalar(f'Distance/denoising/image_{img_index}', distance.item(), step_idx)
+            
+            if record and idx % 10 == 0:
+                file_path = os.path.join(save_root, f"progress/x_{str(idx).zfill(4)}.png")
+                plt.imsave(file_path, clear_color(img))
+        
+        return img
+    
     def predict_eps_from_x_start(self, x_t, t, pred_xstart):
         coef1 = extract_and_expand(self.sqrt_recip_alphas_cumprod, t, x_t)
         coef2 = extract_and_expand(self.sqrt_recipm1_alphas_cumprod, t, x_t)

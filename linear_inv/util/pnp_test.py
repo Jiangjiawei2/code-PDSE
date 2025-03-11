@@ -10,6 +10,8 @@ import lpips
 from util.img_utils import clear_color, mask_generator, normalize_np, clear
 from torch.nn import MSELoss, L1Loss
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
+
 
 def DMPlug(
     model,
@@ -30,7 +32,8 @@ def DMPlug(
     lr=0.02,
     denoiser_step=3,
     mask=None,
-    random_seed=None
+    random_seed=None,
+    writer=None
 ):
     # 使用传入的随机种子重新设置随机种子
     torch.manual_seed(random_seed)
@@ -70,18 +73,57 @@ def DMPlug(
         loss.backward(retain_graph=True)
         optimizer.step()
         losses.append(loss.item())
-
+        
+        
         with torch.no_grad():
-            metrics = compute_metrics(
-            sample=sample,
-            ref_img=ref_img,
-            out_path=out_path,
-            device=device,
-            loss_fn_alex=loss_fn_alex,
-            epoch=epoch,
-            iteration=iteration,
-            metrics=None  # 初次调用时不传递 metrics，函数会自动初始化
-        )
+            best_img_np = x_k.cpu().squeeze().detach().numpy().transpose(1, 2, 0)
+            ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
+
+            final_psnr = peak_signal_noise_ratio(ref_img_np, best_img_np)
+            final_ssim = structural_similarity(ref_img_np, best_img_np, channel_axis=2, data_range=1)
+            best_img_torch = torch.from_numpy(best_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
+            ref_img_torch = torch.from_numpy(ref_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
+            final_lpips = loss_fn_alex(ref_img_torch, best_img_torch).item()
+
+            # 记录指标到 TensorBoard
+            metrics = {
+                'Loss': loss.item(),
+                'PSNR': final_psnr,
+                'SSIM': final_ssim,
+                'LPIPS': final_lpips
+            }
+            if writer is not None:
+                log_metrics_to_tensorboard(writer, metrics, epoch)
+                  # 保存结果和图像
+        plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(x_k))
+        plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
+        plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
+
+    # 结束时关闭 TensorBoard 记录器
+    if writer is not None:
+        writer.close()
+
+    # 返回最后的结果
+    final_metric = {
+        'psnr': final_psnr,
+        'ssim': final_ssim,
+        'lpips': final_lpips
+    }
+
+    print(f"Final metrics between best reconstructed image and reference image:")
+    print(f"PSNR: {final_psnr:.4f}, SSIM: {final_ssim:.4f}, LPIPS: {final_lpips:.4f}")
+        
+        # with torch.no_grad():
+        #     metrics = compute_metrics(
+        #     sample=sample,
+        #     ref_img=ref_img,
+        #     out_path=out_path,
+        #     device=device,
+        #     loss_fn_alex=loss_fn_alex,
+        #     epoch=epoch,
+        #     iteration=iteration,
+        #     metrics=None  # 初次调用时不传递 metrics，函数会自动初始化
+        # )
 
                 
             # # Statistical characteristic-based early stopping
@@ -104,7 +146,7 @@ def DMPlug(
     # Save results
     # Z_np = (Z.detach().cpu().numpy().squeeze(0)).clip(0, 1)
     # plt.imsave(os.path.join(out_path, 'Z_image.png'), Z_np.transpose(1, 2, 0))
-    plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample))
+    # plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample))
 
     # # Plot losses
     # plt.plot(losses, label='Loss')
@@ -116,33 +158,33 @@ def DMPlug(
     # plt.savefig(os.path.join(out_path, 'psnr.png'))
     # plt.close()
     
-    plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
-    plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
+    # plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
+    # plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
     
     
     # 转换最佳图像和参考图像为 numpy 格式
-    best_img_np = sample.cpu().squeeze().detach().numpy().transpose(1, 2, 0) 
-    ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
+    # best_img_np = sample.cpu(、).squeeze().detach().numpy().transpose(1, 2, 0) 
+    # ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
 
     # 计算 PSNR
-    final_psnr = peak_signal_noise_ratio(ref_img_np, best_img_np)
+    # final_psnr = peak_signal_noise_ratio(ref_img_np, best_img_np)
     # 计算 SSIM
-    final_ssim = structural_similarity(ref_img_np, best_img_np, channel_axis=2, data_range=1)
+    # final_ssim = structural_similarity(ref_img_np, best_img_np, channel_axis=2, data_range=1)
     # 计算 LPIPS
-    best_img_torch = torch.from_numpy(best_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
-    ref_img_torch = torch.from_numpy(ref_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
-    final_lpips = loss_fn_alex(ref_img_torch, best_img_torch).item()
+    # best_img_torch = torch.from_numpy(best_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
+    # ref_img_torch = torch.from_numpy(ref_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
+    # final_lpips = loss_fn_alex(ref_img_torch, best_img_torch).item()
 
-     # 将结果组织到字典中
-    final_metric = {
-        'psnr': final_psnr,
-        'ssim': final_ssim,
-        'lpips': final_lpips
-    }
+    #  # 将结果组织到字典中
+    # final_metric = {
+    #     'psnr': final_psnr,
+    #     'ssim': final_ssim,
+    #     # 'lpips': final_lpips
+    # }
     
     # 打印最终的 PSNR, SSIM, LPIPS
-    print(f"Final metrics between best reconstructed image and reference image:")
-    print(f"PSNR: {final_psnr:.4f}, SSIM: {final_ssim:.4f}, LPIPS: {final_lpips:.4f}")
+    # print(f"Final metrics between best reconstructed image and reference image:")
+    # print(f"PSNR: {final_psnr:.4f}, SSIM: {final_ssim:.4f}, LPIPS: {final_lpips:.4f}")
     
     return sample , final_metric
 
@@ -504,14 +546,6 @@ def acce_RED_diff(   ##  best performence
                     model=model, x=sample, t=time, measurement=y_n, measurement_cond_fn=measurement_cond_fn, mask=mask
                 )
                 
-            # metrics = compute_metrics(
-            #     sample=sample,
-            #     ref_img=ref_img,
-            #     out_path=out_path,
-            #     device=device,
-            #     loss_fn_alex=loss_fn_alex,
-            #     metrics=None  # 初次调用时不传递 metrics，函数会自动初始化
-            # )
 
     # 优化过程
     sample = sample.detach().clone().requires_grad_(True)
@@ -530,8 +564,6 @@ def acce_RED_diff(   ##  best performence
             x_t, pred_start = sampler.p_sample(
                 model=model, x=x_t, t=time, measurement=y_n, measurement_cond_fn=measurement_cond_fn, mask=mask
             )
-        
-        
         
         if mask is not None:
             difference = y_n - operator.forward(x_t, mask=mask)
@@ -572,7 +604,7 @@ def acce_RED_diff(   ##  best performence
         # # 计算并记录指标
         with torch.no_grad():
             metrics = compute_metrics(
-            sample=sample,
+            sample=x_k,
             ref_img=ref_img,
             out_path=out_path,
             device=device,
@@ -595,8 +627,8 @@ def acce_RED_diff(   ##  best performence
         #     mean_changes.append(mean_val)
 
     # Save results
-    Z_np = (Z.detach().cpu().numpy().squeeze(0)).clip(0, 1)
-    plt.imsave(os.path.join(out_path, 'Z_image.png'), Z_np.transpose(1, 2, 0))
+    # Z_np = (Z.detach().cpu().numpy().squeeze(0)).clip(0, 1)
+    # plt.imsave(os.path.join(out_path, 'Z_image.png'), Z_np.transpose(1, 2, 0))
     plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(x_k))
 
     # # Plot losses
@@ -614,7 +646,7 @@ def acce_RED_diff(   ##  best performence
     
     
     # 转换最佳图像和参考图像为 numpy 格式
-    best_img_np = x_t.cpu().squeeze().detach().numpy().transpose(1, 2, 0) 
+    best_img_np = x_k.cpu().squeeze().detach().numpy().transpose(1, 2, 0) 
     ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
 
     # 计算 PSNR
@@ -1334,7 +1366,7 @@ def acce_DMPlug(
 
 
 
-def mpgd(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_seed=None):
+def mpgd(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_seed=None, writer=None, img_index=None):
     """
     采样、计算评价指标并保存结果
     
@@ -1345,30 +1377,109 @@ def mpgd(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_see
     - out_path: 输出保存路径
     - fname: 保存的文件名
     - device: 运行的设备（CPU 或 GPU）
+    - mask: 可选的掩码张量
+    - random_seed: 随机种子
+    - writer: TensorBoard SummaryWriter对象
+    - img_index: 当前处理的图像索引，用于TensorBoard日志
     """
     
     # 使用传入的随机种子重新设置随机种子
-    torch.manual_seed(random_seed)
-    torch.cuda.manual_seed(random_seed)
-    torch.cuda.manual_seed_all(random_seed)
+    if random_seed is not None:
+        torch.manual_seed(random_seed)
+        torch.cuda.manual_seed(random_seed)
+        torch.cuda.manual_seed_all(random_seed)
     
     # 开始采样
     x_start = torch.randn(ref_img.shape, device=device).requires_grad_()
-    sample = sample_fn(x_start=x_start, measurement=y_n, record=True, save_root=out_path,mask=mask)
+    sample = sample_fn(x_start=x_start, measurement=y_n, record=True, save_root=out_path, 
+                      mask=mask, ref_img=ref_img, writer=writer, img_index=img_index)
 
     # 初始化评价指标列表
-    psnrs = []
-    ssims = []
-    lpipss = []
+    loss_fn_alex = lpips.LPIPS(net='alex').to(device)
+    
+    with torch.no_grad():
+        best_img_np = sample.cpu().squeeze().detach().numpy().transpose(1, 2, 0) 
+        ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
+
+        final_psnr = peak_signal_noise_ratio(ref_img_np, best_img_np)
+        final_ssim = structural_similarity(ref_img_np, best_img_np, channel_axis=2, data_range=1)
+        best_img_torch = torch.from_numpy(best_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
+        ref_img_torch = torch.from_numpy(ref_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
+        final_lpips = loss_fn_alex(ref_img_torch, best_img_torch).item()
+
+        # 记录最终指标到 TensorBoard
+        metrics = {
+            'psnr': final_psnr,
+            'ssim': final_ssim,
+            'lpips': final_lpips
+        }
+        
+        if writer is not None:
+            # 使用图像索引作为标识符记录最终指标
+            writer.add_scalar(f'Final/PSNR', final_psnr, img_index)
+            writer.add_scalar(f'Final/SSIM', final_ssim, img_index)
+            writer.add_scalar(f'Final/LPIPS', final_lpips, img_index)
+            
+            # 添加图像到TensorBoard - 每种类型放在单独的文件夹
+            writer.add_image(f'Reference/image_{img_index}', ref_img_torch[0], 0)
+            writer.add_image(f'Reconstructed/image_{img_index}', best_img_torch[0], 0)
+            writer.add_image(f'Noisy/image_{img_index}', y_n[0], 0)
+    
+    # 保存结果和图像
+    plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample))
+    plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
+    plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
+
+    print(f"Final metrics between best reconstructed image and reference image:")
+    print(f"PSNR: {final_psnr:.4f}, SSIM: {final_ssim:.4f}, LPIPS: {final_lpips:.4f}")
+    
+    return sample, metrics
+
+
+
+def DPS(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_seed=None, writer=None, img_index=None):
+    """
+    采样、计算评价指标并保存结果
+    
+    Parameters:
+    - sample_fn: 采样函数
+    - ref_img: 参考图像张量
+    - y_n: 噪声后的图像张量
+    - out_path: 输出保存路径
+    - fname: 保存的文件名
+    - device: 运行的设备（CPU 或 GPU）
+    - mask: 可选的掩码
+    - random_seed: 随机种子
+    - writer: TensorBoard SummaryWriter对象
+    - img_index: 当前处理的图像索引，用于TensorBoard日志
+    """
+    
+    # 使用传入的随机种子重新设置随机种子
+    if random_seed is not None:
+        torch.manual_seed(random_seed)
+        torch.cuda.manual_seed(random_seed)
+        torch.cuda.manual_seed_all(random_seed)
+    
+    # 开始采样 - 传递writer和img_index参数
+    x_start = torch.randn(ref_img.shape, device=device).requires_grad_()
+    sample = sample_fn(
+        x_start=x_start, 
+        measurement=y_n, 
+        record=True, 
+        save_root=out_path, 
+        mask=mask, 
+        ref_img=ref_img,
+        writer=writer, 
+        img_index=img_index
+    )
+
+    # 初始化评价指标
     loss_fn_alex = lpips.LPIPS(net='alex').to(device)
 
-    # 计算并记录指标
-
-    # Save results
+    # 保存结果图像
     plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample)) 
     plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
     plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
-    
     
     # 转换最佳图像和参考图像为 numpy 格式
     best_img_np = sample.cpu().squeeze().detach().numpy().transpose(1, 2, 0) 
@@ -1383,84 +1494,27 @@ def mpgd(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_see
     ref_img_torch = torch.from_numpy(ref_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
     final_lpips = loss_fn_alex(ref_img_torch, best_img_torch).item()
 
+    # 记录最终指标
     final_metric = {
         'psnr': final_psnr,
         'ssim': final_ssim,
         'lpips': final_lpips
     }
+    
+    # 将最终指标记录到TensorBoard
+    if writer is not None and img_index is not None:
+        writer.add_scalar(f'Final/PSNR', final_psnr, img_index)
+        writer.add_scalar(f'Final/SSIM', final_ssim, img_index)
+        writer.add_scalar(f'Final/LPIPS', final_lpips, img_index)
         
+        # 添加最终重建图像到TensorBoard
+        writer.add_image(f'Images/Reconstructed_{img_index}', best_img_torch[0], img_index)
+    
     # 打印最终的 PSNR, SSIM, LPIPS
     print(f"Final metrics between best reconstructed image and reference image:")
     print(f"PSNR: {final_psnr:.4f}, SSIM: {final_ssim:.4f}, LPIPS: {final_lpips:.4f}")
     
-    
-    
-    return sample , final_metric
-
-
-
-def DPS(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_seed=None):
-    """
-    采样、计算评价指标并保存结果
-    
-    Parameters:
-    - sample_fn: 采样函数
-    - ref_img: 参考图像张量
-    - y_n: 噪声后的图像张量
-    - out_path: 输出保存路径
-    - fname: 保存的文件名
-    - device: 运行的设备（CPU 或 GPU）
-    """
-    
-    # 使用传入的随机种子重新设置随机种子
-    torch.manual_seed(random_seed)
-    torch.cuda.manual_seed(random_seed)
-    torch.cuda.manual_seed_all(random_seed)
-    
-    # 开始采样
-    x_start = torch.randn(ref_img.shape, device=device).requires_grad_()
-    sample = sample_fn(x_start=x_start, measurement=y_n, record=True, save_root=out_path,mask=mask)
-
-    # 初始化评价指标列表
-    psnrs = []
-    ssims = []
-    lpipss = []
-    loss_fn_alex = lpips.LPIPS(net='alex').to(device)
-
-    # 计算并记录指标
-
-    # Save results
-    plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample)) 
-    plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
-    plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
-    
-    
-    # 转换最佳图像和参考图像为 numpy 格式
-    best_img_np = sample.cpu().squeeze().detach().numpy().transpose(1, 2, 0) 
-    ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
-
-    # 计算 PSNR
-    final_psnr = peak_signal_noise_ratio(ref_img_np, best_img_np)
-    # 计算 SSIM
-    final_ssim = structural_similarity(ref_img_np, best_img_np, channel_axis=2, data_range=1)
-    # 计算 LPIPS
-    best_img_torch = torch.from_numpy(best_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
-    ref_img_torch = torch.from_numpy(ref_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
-    final_lpips = loss_fn_alex(ref_img_torch, best_img_torch).item()
-
-    final_metric = {
-        'psnr': final_psnr,
-        'ssim': final_ssim,
-        'lpips': final_lpips
-    }
-        
-    # 打印最终的 PSNR, SSIM, LPIPS
-    print(f"Final metrics between best reconstructed image and reference image:")
-    print(f"PSNR: {final_psnr:.4f}, SSIM: {final_ssim:.4f}, LPIPS: {final_lpips:.4f}")
-    
-    
-    
-    return sample , final_metric
+    return sample, final_metric
 
 
 

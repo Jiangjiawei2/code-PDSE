@@ -72,34 +72,34 @@
 
 ### 3.9 unknow noise experiment 
 
-# gaussian
-echo "Running experiment with algo=mpgd"
-python ffhq_sample_condition.py \
-    --model_config=configs/model_config.yaml \
-    --diffusion_config=configs/mgpd_diffusion_config.yaml \
-    --task_config=configs/super_resolution_config.yaml \
-    --timestep=50 \
-    --scale=17.5 \
-    --method="mpgd_wo_proj" \
-    --algo="mpgd"\
-    --noise_type="gaussian"\
-    --noise_scale=0.08
-echo "Finished experiment with algo=mpgd, task = super_resolution"
-echo "----------------------------------------"
+# # gaussian
+# echo "Running experiment with algo=mpgd"
+# python ffhq_sample_condition.py \
+#     --model_config=configs/model_config.yaml \
+#     --diffusion_config=configs/mgpd_diffusion_config.yaml \
+#     --task_config=configs/super_resolution_config.yaml \
+#     --timestep=50 \
+#     --scale=17.5 \
+#     --method="mpgd_wo_proj" \
+#     --algo="mpgd"\
+#     --noise_type="gaussian"\
+#     --noise_scale=0.08
+# echo "Finished experiment with algo=mpgd, task = super_resolution"
+# echo "----------------------------------------"
 
-echo "Running experiment with algo=mpgd"
-python ffhq_sample_condition.py \
-    --model_config=configs/model_config.yaml \
-    --diffusion_config=configs/mgpd_diffusion_config.yaml \
-    --task_config=configs/super_resolution_config.yaml \
-    --timestep=50 \
-    --scale=17.5 \
-    --method="mpgd_wo_proj" \
-    --algo="mpgd"\
-    --noise_type="gaussian"\
-    --noise_scale=0.12
-echo "Finished experiment with algo=mpgd, task = super_resolution"
-echo "----------------------------------------"
+# echo "Running experiment with algo=mpgd"
+# python ffhq_sample_condition.py \
+#     --model_config=configs/model_config.yaml \
+#     --diffusion_config=configs/mgpd_diffusion_config.yaml \
+#     --task_config=configs/super_resolution_config.yaml \
+#     --timestep=50 \
+#     --scale=17.5 \
+#     --method="mpgd_wo_proj" \
+#     --algo="mpgd"\
+#     --noise_type="gaussian"\
+#     --noise_scale=0.12
+# echo "Finished experiment with algo=mpgd, task = super_resolution"
+# echo "----------------------------------------"
 
 
 # impulse
@@ -131,7 +131,7 @@ python ffhq_sample_condition.py \
 echo "Finished experiment with algo=mpgd, task = super_resolution"
 echo "----------------------------------------"
 
-# shot
+# # shot
 echo "Running experiment with algo=mpgd"
 python ffhq_sample_condition.py \
     --model_config=configs/model_config.yaml \
@@ -147,7 +147,7 @@ echo "Finished experiment with algo=mpgd, task = super_resolution"
 echo "----------------------------------------"
 
 
-echo "Running experiment with algo=mpgd"
+# echo "Running experiment with algo=mpgd"
 python ffhq_sample_condition.py \
     --model_config=configs/model_config.yaml \
     --diffusion_config=configs/mgpd_diffusion_config.yaml \
