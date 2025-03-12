@@ -24,7 +24,9 @@ import numpy as np
 from util.pnp_test import *
 from motionblur.motionblur import Kernel
 from torch.utils.tensorboard import SummaryWriter
+import json
 
+                
 def load_yaml(file_path: str) -> dict:
     with open(file_path) as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
@@ -35,14 +37,14 @@ def main():
     parser.add_argument('--model_config', type=str,default="./configs/model_config.yaml")
     parser.add_argument('--diffusion_config', type=str, default="./configs/mgpd_diffusion_config.yaml")
     parser.add_argument('--task_config', type=str, default="./configs/super_resolution_config.yaml")
-    parser.add_argument('--gpu', type=int, default=0)
+    parser.add_argument('--gpu', type=int, default=1)
     parser.add_argument('--timestep', type=int, default=10)
     parser.add_argument('--eta', type=float, default=0)
     parser.add_argument('--scale', type=float, default=17.5)
     parser.add_argument('--method', type=str, default='mpgd_wo_proj') # mpgd_wo_proj
     parser.add_argument('--save_dir', type=str, default='./outputs/ffhq/')
     parser.add_argument('--algo', type=str, default='acce_RED_diff')
-    parser.add_argument('--iter', type=int, default=500)
+    parser.add_argument('--iter', type=int, default=200)
     parser.add_argument('--noise_scale', type=float, default=0.03, help='a value of noise_scale')
     parser.add_argument('--noise_type', type=str, default='impulse', help='unkown noise type')
     parser.add_argument('--iter_step', type=float, default=3, help='New value for iter_step')
@@ -92,7 +94,7 @@ def main():
     try:
         cond_method = get_conditioning_method(cond_config['method'], operator, noiser, resume = "../nonlinear/SD_style/models/ldm/celeba256/model.ckpt", **cond_config['params'])
     except FileNotFoundError:
-        logger.warning("无法找到checkpoint文件，将尝试继续执行...")
+        logger.warning("无法找到checkpoint文件， 将尝试继续执行...")
         cond_method = get_conditioning_method(cond_config['method'], operator, noiser, **cond_config['params'])
     
     measurement_cond_fn = cond_method.conditioning
@@ -205,8 +207,11 @@ def main():
                 return torch.tensor([0.0]).to(device)
         loss_fn_alex = DummyLPIPS()
     
+    # 在循环外部初始化一个列表来存储所有图像的psnr曲线
+    all_psnr_curves = []
+    
     #### 执行推理
-    max_images = 10  # 限制处理的图像数量
+    max_images = 50  # 限制处理的图像数量
     for i, ref_img in enumerate(loader):
         if i >= max_images:
             break
@@ -325,7 +330,7 @@ def main():
                     sample, metrics = acce_DMPlug(
                         model, sampler, measurement_cond_fn, ref_img, y_n, device, model_config, measure_config, operator, fname,
                         iter_step=int(args.iter_step), iteration=args.iter, denoiser_step=args.timestep, stop_patience=5, 
-                        early_stopping_threshold=0.01, lr=0.02, out_path=out_path, mask=mask, random_seed=random_seed,
+                        early_stopping_threshold=0.01, lr=0.005, out_path=out_path, mask=mask, random_seed=random_seed,
                         writer=writer, img_index=i
                     )
                 except Exception as e:
@@ -342,30 +347,34 @@ def main():
                     logger.error(f"mpgd执行错误: {e}")
                     continue
                 
-            elif args.algo == 'RED_diff':
-                try:
-                    sample, metrics = RED_diff(
-                        model, sampler, measurement_cond_fn, ref_img, y_n, args, operator, device, model_config,
-                        measure_config, fname, early_stopping_threshold=1e-3, stop_patience=5, out_path=out_path,
-                        iteration=args.iter, lr=0.02, denoiser_step=args.timestep, mask=mask, random_seed=random_seed,
-                        writer=writer, img_index=i
-                    )
-                except Exception as e:
-                    logger.error(f"RED_diff执行错误: {e}")
-                    continue
-                
+
             elif args.algo == 'acce_RED_diff':
                 try:
-                    sample, metrics = acce_RED_diff(
+                    sample, metrics, psnr_curve = acce_RED_diff(
                         model, sampler, measurement_cond_fn, ref_img, y_n, device, model_config, measure_config, operator, fname,
                         iter_step=int(args.iter_step), iteration=args.iter, denoiser_step=args.timestep, stop_patience=5, 
-                        early_stopping_threshold=0.02, lr=0.01, out_path=out_path, mask=mask, random_seed=random_seed,
+                        early_stopping_threshold=0.02, lr=0.005, out_path=out_path, mask=mask, random_seed=random_seed,
                         writer=writer, img_index=i
                     )
+                    # 将当前图像的psnr_curve添加到所有曲线列表中
+                    all_psnr_curves.append({
+                        'image_index': i,
+                        'filename': fname,
+                        'psnr_curve': psnr_curve['psnrs']
+                    })
+                    
                 except Exception as e:
                     logger.error(f"acce_RED_diff执行错误: {e}")
                     continue
-                
+                # 将numpy数组转换为列表以便JSON序列化
+                for curve_data in all_psnr_curves:
+                    if isinstance(curve_data['psnr_curve'], np.ndarray):
+                        curve_data['psnr_curve'] = curve_data['psnr_curve'].tolist()
+
+                # 保存到JSON文件
+                with open(os.path.join(out_path, 'all_psnr_curves.json'), 'w') as f:
+                    json.dump(all_psnr_curves, f, indent=4)
+                    
             elif args.algo == 'acce_RED_diff_turbulence':
                 try:
                     sample, metrics = acce_RED_diff_turbulence(
@@ -450,7 +459,11 @@ def main():
             import traceback
             logger.error(traceback.format_exc())
             continue
-    
+        
+        
+        
+        
+               
     # 在所有图像处理完成后，记录平均指标
     if psnrs_list:
         avg_psnr = np.mean(psnrs_list)

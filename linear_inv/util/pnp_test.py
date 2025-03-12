@@ -12,44 +12,170 @@ from util.img_utils import clear_color, mask_generator, normalize_np, clear
 from torch.nn import MSELoss, L1Loss
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
+import torch.nn as nn 
 
 
-class EarlyStopping:
-    def __init__(self, patience=40, min_delta=0, verbose=False):
-        """
-        初始化早停策略
-        
-        参数：
-        - patience: 等待多少个 epoch 后，如果验证指标不再改善，则停止训练。
-        - min_delta: 允许的最小变化量，低于该变化量时不认为是改进。
-        - verbose: 是否打印早停信息。
-        """
+# 移动方差早停 (ES-WMV: Early Stopping with Weighted Moving Variance)
+class ESWithWMV:
+    """
+    基于加权移动方差的早停策略
+    
+    参数:
+        window_size (int): 用于计算移动方差的窗口大小
+        var_threshold (float): 方差早停的阈值
+        alpha (float): 损失早停的相对改进阈值
+        patience (int): 允许没有足够改进的迭代次数
+        min_epochs (int): 在考虑早停前的最小迭代次数
+        verbose (bool): 是否打印详细信息
+    """
+    def __init__(self, window_size=15, var_threshold=0.0005, alpha=0.005, 
+                 patience=20, min_epochs=50, verbose=True):
+        self.window_size = window_size
+        self.var_threshold = var_threshold
+        self.alpha = alpha
         self.patience = patience
-        self.min_delta = min_delta
+        self.min_epochs = min_epochs
         self.verbose = verbose
+        
+        # 图像历史
+        self.image_history = []
+        
+        # 损失历史和相关变量
+        self.loss_history = []
+        self.best_loss = float('inf')
+        self.best_epoch = 0
         self.counter = 0
-        self.best_score = None
-        self.early_stop = False
-
-    def __call__(self, metric):
+        self.stop_flag = False
+        
+    def calculate_weight(self, idx, window_size):
+        """计算加权移动方差中的权重，越近的样本权重越大"""
+        return (idx + 1) / sum(range(1, window_size + 1))
+    
+    def calculate_wmv(self):
+        """计算加权移动方差，更保守的实现"""
+        if len(self.image_history) < self.window_size:
+            return float('inf')
+        
+        # 获取最近的窗口大小的图像
+        recent_images = self.image_history[-self.window_size:]
+        
+        # 计算均值图像
+        mean_image = sum(recent_images) / len(recent_images)
+        
+        # 计算加权方差（更保守的实现）
+        weighted_var = 0
+        total_pixels = 0
+        
+        # 计算每个像素位置的加权方差
+        for i, img in enumerate(recent_images):
+            weight = self.calculate_weight(i, self.window_size)
+            diff = img - mean_image
+            # 使用更保守的方差计算，考虑整个图像的局部变化
+            weighted_var += weight * torch.mean(diff * diff).item()
+            
+            # 额外检查局部差异的最大值
+            max_local_diff = torch.max(torch.abs(diff)).item()
+            if max_local_diff > weighted_var:
+                weighted_var = max(weighted_var, max_local_diff * 0.1)
+            
+            total_pixels += 1
+        
+        # 如果还没有足够多的样本，返回一个更大的值
+        if len(self.image_history) < self.window_size * 2:
+            return weighted_var * 2.0
+            
+        return weighted_var
+    
+    def __call__(self, epoch, image, loss):
         """
-        调用时，检查当前的指标是否足够好来更新最优指标。
+        检查是否应该早停 - 更保守的实现
+        
+        参数:
+            epoch (int): 当前迭代轮次
+            image (torch.Tensor): 当前图像
+            loss (float): 当前损失值
+            
+        返回:
+            bool: 如果应该停止则返回True，否则返回False
         """
-        if self.best_score is None:
-            self.best_score = metric
-        elif metric < self.best_score - self.min_delta:
-            self.best_score = metric
-            self.counter = 0  # reset counter if metric improves
-        else:
-            self.counter += 1  # increase counter if no improvement
-
-        if self.counter >= self.patience:
-            self.early_stop = True
+        # 存储当前图像和损失
+        self.image_history.append(image.detach().clone())
+        self.loss_history.append(loss)
+        
+        # 如果迭代次数少于最小迭代次数，继续训练
+        if epoch < self.min_epochs:
+            return False
+        
+        # 计算加权移动方差
+        current_wmv = self.calculate_wmv()
+        
+        # 记录WMV但不总是触发早停
+        if current_wmv < self.var_threshold and epoch > self.min_epochs * 1.5:
             if self.verbose:
-                print(f"Early stopping triggered after {self.counter} epochs without improvement.")
-
-    def stop_training(self):
-        return self.early_stop
+                print(f"WMV指标低于阈值: {current_wmv:.6f}，但继续训练")
+            
+            # 只有当方差连续多轮都非常低，并且已经训练了很多轮时才触发
+            if current_wmv < self.var_threshold * 0.5 and len(self.loss_history) > 5:
+                # 检查最近5轮的损失变化是否也很小
+                recent_losses = self.loss_history[-5:]
+                loss_variance = np.var(recent_losses)
+                
+                if loss_variance < self.alpha * 0.01 and epoch > self.min_epochs * 2:
+                    if self.verbose:
+                        print(f"WMV和损失方差都很低，早停触发。WMV={current_wmv:.6f}, 损失方差={loss_variance:.6f}")
+                    self.stop_flag = True
+                    return True
+        
+        # 更新最佳损失 - 更保守的更新
+        if loss < self.best_loss * (1 - self.alpha):
+            self.best_loss = loss
+            self.best_epoch = epoch
+            self.counter = 0
+        else:
+            # 在训练前期，计数器增加得更慢
+            if epoch < self.min_epochs * 1.5:
+                self.counter += 0.5  # 半速计数
+            else:
+                self.counter += 1
+            
+        # 检查损失耐心早停条件 - 确保连续多轮无改进
+        if self.counter >= self.patience:
+            # 额外检查最近N轮的损失变化率
+            if len(self.loss_history) >= self.patience:
+                recent_losses = self.loss_history[-self.patience:]
+                avg_change_rate = np.mean([abs(recent_losses[i] - recent_losses[i-1])/recent_losses[i-1] 
+                                        for i in range(1, len(recent_losses))])
+                
+                # 如果损失还在显著变化，给予额外的耐心
+                if avg_change_rate > self.alpha * 2:
+                    if self.verbose:
+                        print(f"损失仍在变化({avg_change_rate:.6f})，重置耐心计数器")
+                    self.counter = self.patience // 2
+                    return False
+            
+            if self.verbose:
+                print(f"损失早停触发，{self.patience}轮没有足够改进")
+            self.stop_flag = True
+            return True
+            
+        return False
+    
+    def get_best_epoch(self):
+        """返回具有最佳损失的轮次"""
+        return self.best_epoch
+    
+    def should_stop(self):
+        """返回是否应该停止训练"""
+        return self.stop_flag
+    
+    def reset(self):
+        """重置早停器"""
+        self.image_history = []
+        self.loss_history = []
+        self.best_loss = float('inf')
+        self.best_epoch = 0
+        self.counter = 0
+        self.stop_flag = False
 
 def log_metrics_to_tensorboard(writer, metrics, step, img_index=None, prefix=''):
     """将指标记录到TensorBoard
@@ -431,6 +557,11 @@ def DMPlug(
     writer=None,
     img_index=None
 ):
+    # 初始化早停策略
+
+    stop_patience = 10
+    early_stopping_threshold = 0.01
+    early_stopper = EarlyStopping(patience=stop_patience, min_delta=early_stopping_threshold, verbose=True)
     """
     DMPlug算法：使用扩散模型作为先验，通过迭代优化重建图像。
     """
@@ -962,7 +1093,6 @@ def RED_diff(
 
 
 
-## 修改acce_RED_diff函数，移除重复的记录
 def acce_RED_diff(   
     model, sampler, measurement_cond_fn, ref_img, y_n, device, model_config,
     measure_config, operator, fname, iter_step=3, iteration=1000, denoiser_step=10, 
@@ -972,6 +1102,14 @@ def acce_RED_diff(
     """
     acce_RED_diff算法: 加速版的RED (Regularization by Denoising) 使用扩散模型
     """
+     # 首先导入所有必需的模块
+    import os
+    import numpy as np
+    import torch
+    import torch.nn as nn
+    import matplotlib.pyplot as plt
+    import torchvision
+    from tqdm import tqdm
     # 使用传入的随机种子重新设置随机种子
     if random_seed is not None:
         torch.manual_seed(random_seed)
@@ -989,7 +1127,7 @@ def acce_RED_diff(
                        f'Early Stopping: threshold={early_stopping_threshold}, patience={stop_patience}\n'
                        f'Random Seed: {random_seed}', 0)
         
-        # 记录参考图像和测量图像不需要修改，因为这些是算法的输入
+        # 记录参考图像和测量图像
         if ref_img.dim() == 4:  # [B, C, H, W]
             ref_to_log = (ref_img[0] + 1) / 2  # 规范化到[0,1]
         else:  # [C, H, W]
@@ -1051,34 +1189,17 @@ def acce_RED_diff(
         {'params': sample, 'lr': lr}, 
         {'params': alpha, 'lr': lr}
     ])
-
-    # 创建早停对象
-    class EarlyStopping:
-        def __init__(self, patience=5, min_delta=0, verbose=False):
-            self.patience = patience
-            self.min_delta = min_delta
-            self.verbose = verbose
-            self.counter = 0
-            self.best_score = None
-            self.early_stop = False
-
-        def __call__(self, score):
-            if self.best_score is None:
-                self.best_score = score
-            elif score > self.best_score - self.min_delta:
-                self.counter += 1
-                if self.verbose:
-                    print(f"早停等待: {self.counter}/{self.patience}")
-                if self.counter >= self.patience:
-                    self.early_stop = True
-            else:
-                self.best_score = score
-                self.counter = 0
-                
-        def stop_training(self):
-            return self.early_stop
     
-    early_stopper = EarlyStopping(patience=stop_patience, min_delta=early_stopping_threshold, verbose=True)
+    # 初始化新的早停器 (加权移动方差早停) - 调整为更保守的配置
+    early_stopper = ESWithWMV(
+        window_size=8,                         # 使用更大窗口(20)计算加权移动方差，提高稳定性
+        var_threshold=0.002,  # 降低方差阈值，使其更难触发
+        alpha=0.01,     # 降低相对改进阈值，使其更容易满足条件
+        patience=8,               # 增加耐心参数，允许更长时间无改进
+        min_epochs=30,                         # 显著增加最小训练轮数，确保充分训练
+        verbose=True                           # 打印详细信息
+    )
+    
     best_loss = float('inf')
     best_sample = None
     best_metrics = None
@@ -1160,7 +1281,7 @@ def acce_RED_diff(
                 # 计算SSIM
                 try:
                     from skimage.metrics import structural_similarity
-                    current_ssim = structural_similarity(ref_np, x_k_np, multichannel=True, data_range=1)
+                    current_ssim = structural_similarity(ref_np, x_k_np, channel_axis=2, data_range=1)
                     ssims.append(current_ssim)
                 except Exception as e:
                     print(f"SSIM计算错误: {e}, 尝试使用channel_axis参数")
@@ -1192,14 +1313,24 @@ def acce_RED_diff(
                     writer.add_scalar(f'acce_RED_diff/Image_{img_index}/LPIPS', current_lpips, epoch)
                     writer.add_scalar(f'acce_RED_diff/Image_{img_index}/Alpha', alpha.item(), epoch)
                     
-                    # 每隔10轮记录一次中间过程图像，保留这部分记录
+                    # 每隔10轮记录一次中间过程图像
                     if epoch % 10 == 0:
                         writer.add_image(f'acce_RED_diff/Image_{img_index}/Intermediate/Epoch_{epoch}', 
                                        (x_k[0] if x_k.dim() == 4 else x_k + 1) / 2, epoch)
                 
-                # 检查早停
-                early_stopper(loss.item())
-                if early_stopper.stop_training():
+                # 检查是否应该早停 - 添加更保守的条件
+                if early_stopper(epoch, x_k, loss.item()):
+                    # 额外检查：如果训练不足200轮且损失还在显著下降，继续训练
+                    if epoch < 30 and len(losses) > 5:  # 减少到30轮和5个样本检查
+                        recent_losses = losses[-5:]
+                        loss_trend = (recent_losses[0] - recent_losses[-1]) / recent_losses[0]
+                        
+                        if loss_trend > 0.1:  # 提高阈值到10%，确保显著下降才继续
+                            print(f"早停被触发，但损失仍在显著下降({loss_trend:.2%})，继续训练")
+                            # 部分重置早停器以继续训练，但不完全重置
+                            early_stopper.counter = early_stopper.patience // 4  # 从1/2减少到1/4
+                            continue
+                    
                     print(f"早停触发，在第{epoch+1}轮停止训练")
                     break
                 
@@ -1214,7 +1345,7 @@ def acce_RED_diff(
                     }
                     best_epoch = epoch
                     
-                    # 记录最佳样本对应的指标，但不记录最终重建图像
+                    # 记录最佳样本对应的指标
                     if writer is not None and img_index is not None:
                         writer.add_text(f'acce_RED_diff/Image_{img_index}/Best/Info', 
                                        f'Epoch: {best_epoch}\n'
@@ -1238,107 +1369,169 @@ def acce_RED_diff(
             'lpips': lpipss[-1] if lpipss else 0
         }
     
-    # 保存结果曲线
+        # 保存结果曲线 - 仅使用TensorBoard
     try:
-        if losses:
-            import matplotlib.pyplot as plt
+        if losses and writer is not None and img_index is not None:
             
-            # 创建图表
-            fig, axs = plt.subplots(2, 2, figsize=(12, 10))
+            # 直接向TensorBoard添加标量数据
+            for i, loss in enumerate(losses):
+                writer.add_scalar(f'acce_RED_diff/Image_{img_index}/Loss', loss, i)
             
-            # 损失曲线
-            axs[0, 0].plot(losses)
-            axs[0, 0].set_title('Loss')
-            axs[0, 0].set_xlabel('Iterations')
-            axs[0, 0].set_ylabel('Loss')
-            
-            # PSNR曲线
+            # 添加PSNR数据
             if psnrs:
-                axs[0, 1].plot(psnrs)
-                axs[0, 1].set_title('PSNR')
-                axs[0, 1].set_xlabel('Iterations')
-                axs[0, 1].set_ylabel('PSNR (dB)')
+                for i, psnr in enumerate(psnrs):
+                    writer.add_scalar(f'acce_RED_diff/Image_{img_index}/PSNR', psnr, i)
             
-            # SSIM曲线
+            # 添加SSIM数据
             if ssims:
-                axs[1, 0].plot(ssims)
-                axs[1, 0].set_title('SSIM')
-                axs[1, 0].set_xlabel('Iterations')
-                axs[1, 0].set_ylabel('SSIM')
+                for i, ssim in enumerate(ssims):
+                    writer.add_scalar(f'acce_RED_diff/Image_{img_index}/SSIM', ssim, i)
             
-            # LPIPS曲线
+            # 添加LPIPS数据
             if lpipss:
-                axs[1, 1].plot(lpipss)
-                axs[1, 1].set_title('LPIPS')
-                axs[1, 1].set_xlabel('Iterations')
-                axs[1, 1].set_ylabel('LPIPS')
-            
-            plt.tight_layout()
-            
-            # 保存图表
-            curves_path = os.path.join(out_path, f'acce_red_diff_curves_{img_index if img_index is not None else ""}.png')
-            plt.savefig(curves_path)
-            plt.close()
-            
-            # 添加到TensorBoard
-            if writer is not None and img_index is not None and os.path.exists(curves_path):
-                img = torchvision.transforms.ToTensor()(plt.imread(curves_path))
-                writer.add_image(f'acce_RED_diff/Image_{img_index}/Learning_Curves', img, 0)
+                for i, lpips_val in enumerate(lpipss):
+                    writer.add_scalar(f'acce_RED_diff/Image_{img_index}/LPIPS', lpips_val, i)
+            print(f"成功将学习曲线数据添加到TensorBoard")
     except Exception as e:
-        print(f"保存结果曲线时出错: {e}")
+        import traceback
+        traceback.print_exc()
+        print(f"记录结果曲线到TensorBoard时出错: {e}")
     
-    # 保存重建图像到文件系统
+        # 保存重建图像到文件系统 - 优化版
     try:
+        # 确保所有必要的导入
         import os
-        os.makedirs(os.path.join(out_path, 'recon'), exist_ok=True)
-        os.makedirs(os.path.join(out_path, 'input'), exist_ok=True)
-        os.makedirs(os.path.join(out_path, 'label'), exist_ok=True)
+        import numpy as np
+        import matplotlib
+        matplotlib.use('Agg')  # 非交互式后端，避免显示问题
+        import matplotlib.pyplot as plt
+        from PIL import Image
+        
+        # 确保目录存在 - 使用多种方式尝试创建目录
+        try:
+            for subdir in ['recon', 'input', 'label']:
+                # 方式1: os.path.join
+                full_path = os.path.join(out_path, subdir)
+                os.makedirs(full_path, exist_ok=True)
+        except Exception:
+            # 方式2: 字符串拼接
+            for subdir in ['recon', 'input', 'label']:
+                full_path = out_path + '/' + subdir
+                os.makedirs(full_path, exist_ok=True)
         
         # 使用安全的图像保存函数
         def save_tensor_image(tensor, path):
-            """保存张量图像到文件"""
-            import matplotlib.pyplot as plt
-            import numpy as np
-            
-            # 确保是CPU张量并分离梯度
-            img = tensor.detach().cpu()
-            
-            # 转换为numpy数组
-            if img.dim() == 4:  # [B, C, H, W]
-                img = img.squeeze(0)  # 转换为[C, H, W]
-            
-            img_np = img.numpy()
-            
-            # 调整通道顺序和归一化
-            if img_np.shape[0] == 3:  # [C, H, W]
-                img_np = np.transpose(img_np, (1, 2, 0))  # 转换为[H, W, C]
-            
-            # 规范化到[0, 1]范围
-            img_np = (img_np + 1) / 2  # 从[-1,1]转换到[0,1]
-            img_np = np.clip(img_np, 0, 1)  # 确保在[0,1]范围内
-            
-            # 保存图像
-            plt.imsave(path, img_np)
+            """保存张量图像到文件 - 增强版"""
+            try:
+                # 确保是CPU张量并分离梯度
+                img = tensor.detach().cpu()
+                
+                # 转换为numpy数组
+                if img.dim() == 4:  # [B, C, H, W]
+                    img = img.squeeze(0)  # 转换为[C, H, W]
+                
+                img_np = img.numpy()
+                
+                # 调整通道顺序和归一化
+                if img_np.shape[0] == 3:  # [C, H, W]
+                    img_np = np.transpose(img_np, (1, 2, 0))  # 转换为[H, W, C]
+                
+                # 规范化到[0, 1]范围
+                img_np = (img_np + 1) / 2  # 从[-1,1]转换到[0,1]
+                img_np = np.clip(img_np, 0, 1)  # 确保在[0,1]范围内
+                
+                # 方法1: 使用matplotlib保存
+                plt.imsave(path, img_np)
+                plt.close()  # 确保关闭图形
+                
+                # 验证文件是否成功创建
+                if not os.path.exists(path) or os.path.getsize(path) == 0:
+                    raise Exception("文件未成功创建或为空")
+                    
+                return True
+            except Exception as e:
+                print(f"使用matplotlib保存图像失败: {e}")
+                
+                try:
+                    # 方法2: 使用PIL保存
+                    img_pil = Image.fromarray((img_np * 255).astype(np.uint8))
+                    img_pil.save(path)
+                    return True
+                except Exception as e2:
+                    print(f"使用PIL保存图像也失败: {e2}")
+                    return False
+        
+        # 准备文件路径
+        try:
+            # 方式1: 使用os.path.join
+            recon_path = os.path.join(out_path, 'recon', fname)
+            input_path = os.path.join(out_path, 'input', fname)
+            label_path = os.path.join(out_path, 'label', fname)
+        except Exception:
+            # 方式2: 使用字符串拼接
+            recon_path = out_path + '/recon/' + fname
+            input_path = out_path + '/input/' + fname
+            label_path = out_path + '/label/' + fname
         
         # 保存图像
-        save_tensor_image(best_sample, os.path.join(out_path, 'recon', fname))
-        save_tensor_image(y_n, os.path.join(out_path, 'input', fname))
-        save_tensor_image(ref_img, os.path.join(out_path, 'label', fname))
+        recon_saved = save_tensor_image(best_sample, recon_path)
+        input_saved = save_tensor_image(y_n, input_path)
+        label_saved = save_tensor_image(ref_img, label_path)
+        
+        if recon_saved and input_saved and label_saved:
+            print(f"成功保存所有图像到 {out_path}")
+        else:
+            print("部分图像保存失败，尝试备选方案")
+            raise Exception("需要使用备选方案")
         
     except Exception as e:
-        print(f"保存图像时出错: {e}")
+        import traceback
+        traceback.print_exc()
+        print(f"保存图像时出错: {e}，尝试备选方案")
+        
         # 备选方案
         try:
-            plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(best_sample))
-            plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
-            plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
+            import os
+            import matplotlib.pyplot as plt
+            
+            # 确保目录存在
+            for subdir in ['recon', 'input', 'label']:
+                full_path = out_path + '/' + subdir
+                os.makedirs(full_path, exist_ok=True)
+            
+            # 使用clear_color函数处理
+            if 'clear_color' in globals():
+                plt.imsave(out_path + '/recon/' + fname, clear_color(best_sample))
+                plt.imsave(out_path + '/input/' + fname, clear_color(y_n))
+                plt.imsave(out_path + '/label/' + fname, clear_color(ref_img))
+                plt.close()
+                print("使用备选方案成功保存图像")
+            else:
+                # 如果clear_color不可用，尝试最简单的保存方法
+                def simple_save(tensor, path):
+                    # 转换为numpy并简单缩放
+                    img = tensor.detach().cpu().squeeze().numpy()
+                    if img.shape[0] == 3:
+                        img = np.transpose(img, (1, 2, 0))
+                    img = (img - img.min()) / (img.max() - img.min() + 1e-8)
+                    plt.imsave(path, img)
+                    
+                simple_save(best_sample, out_path + '/recon/' + fname)
+                simple_save(y_n, out_path + '/input/' + fname)
+                simple_save(ref_img, out_path + '/label/' + fname)
+                plt.close()
+                print("使用简化方法成功保存图像")
+                
         except Exception as e2:
-            print(f"备选保存方案也失败: {e2}")
+            traceback.print_exc()
+            print(f"所有保存方法均失败: {e2}")
+    # 返回训练曲线数据以便进行统计分析
+    psnr_curve = {
+        'psnrs': psnrs,
+    }
     
     # 返回最佳样本和指标
-    return best_sample, best_metrics
-
-
+    return best_sample, best_metrics,psnr_curve
 
 def acce_RED_diff_turbulence(   ##  best performence
     model, sampler, measurement_cond_fn, ref_img, y_n , device, model_config,measure_config, task_config, operator,fname, kernel_ref,

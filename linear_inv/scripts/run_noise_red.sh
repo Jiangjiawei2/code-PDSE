@@ -74,20 +74,20 @@
 ### 3.9 unknow noise experiment 
 
 # gaussian
-# echo "Running experiment with algo=acce_RED_diff"
-# python ffhq_sample_condition.py \
-#     --model_config=configs/model_config.yaml \
-#     --diffusion_config=configs/mgpd_diffusion_config.yaml \
-#     --task_config=configs/super_resolution_config.yaml \
-#     --timestep=6 \
-#     --scale=1 \
-#     --method="mpgd_wo_proj" \
-#     --algo="acce_RED_diff"\
-#     --iter=130\
-#     --noise_type="gaussian"\
-#     --noise_scale=0.08
-# echo "Finished experiment with algo=acce_RED_diff, task = super_resolution"
-# echo "----------------------------------------"
+echo "Running experiment with algo=acce_RED_diff"
+python ffhq_sample_condition.py \
+    --model_config=configs/model_config.yaml \
+    --diffusion_config=configs/mgpd_diffusion_config.yaml \
+    --task_config=configs/super_resolution_config.yaml \
+    --timestep=6 \
+    --scale=1 \
+    --method="mpgd_wo_proj" \
+    --algo="acce_RED_diff"\
+    --iter=180\
+    --noise_type="gaussian"\
+    --noise_scale=0.08
+echo "Finished experiment with algo=acce_RED_diff, task = super_resolution"
+echo "----------------------------------------"
 
 # echo "Running experiment with algo=acce_RED_diff"
 # python ffhq_sample_condition.py \
@@ -106,20 +106,20 @@
 
 
 # impulse
-echo "Running experiment with algo=acce_RED_diff"
-python ffhq_sample_condition.py \
-    --model_config=configs/model_config.yaml \
-    --diffusion_config=configs/mgpd_diffusion_config.yaml \
-    --task_config=configs/super_resolution_config.yaml \
-    --timestep=6 \
-    --scale=1 \
-    --method="mpgd_wo_proj" \
-    --algo="acce_RED_diff"\
-    --iter=200\
-    --noise_type="impulse"\
-    --noise_scale=0.03
-echo "Finished experiment with algo=acce_RED_diff, task = super_resolution"
-echo "----------------------------------------"
+# echo "Running experiment with algo=acce_RED_diff"
+# python ffhq_sample_condition.py \
+#     --model_config=configs/model_config.yaml \
+#     --diffusion_config=configs/mgpd_diffusion_config.yaml \
+#     --task_config=configs/super_resolution_config.yaml \
+#     --timestep=6 \
+#     --scale=1 \
+#     --method="mpgd_wo_proj" \
+#     --algo="acce_RED_diff"\
+#     --iter=200\
+#     --noise_type="impulse"\
+#     --noise_scale=0.03
+# echo "Finished experiment with algo=acce_RED_diff, task = super_resolution"
+# echo "----------------------------------------"
 
 # echo "Running experiment with algo=acce_RED_diff"
 # python ffhq_sample_condition.py \
