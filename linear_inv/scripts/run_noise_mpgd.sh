@@ -132,65 +132,65 @@ echo "Finished experiment with algo=mpgd, task = super_resolution"
 echo "----------------------------------------"
 
 # # shot
-echo "Running experiment with algo=mpgd"
-python ffhq_sample_condition.py \
-    --model_config=configs/model_config.yaml \
-    --diffusion_config=configs/mgpd_diffusion_config.yaml \
-    --task_config=configs/super_resolution_config.yaml \
-    --timestep=50 \
-    --scale=17.5 \
-    --method="mpgd_wo_proj" \
-    --algo="mpgd"\
-    --noise_type="shot"\
-    --noise_scale=60
-echo "Finished experiment with algo=mpgd, task = super_resolution"
-echo "----------------------------------------"
-
-
 # echo "Running experiment with algo=mpgd"
-python ffhq_sample_condition.py \
-    --model_config=configs/model_config.yaml \
-    --diffusion_config=configs/mgpd_diffusion_config.yaml \
-    --task_config=configs/super_resolution_config.yaml \
-    --timestep=50 \
-    --scale=17.5 \
-    --method="mpgd_wo_proj" \
-    --algo="mpgd"\
-    --noise_type="shot"\
-    --noise_scale=25
-echo "Finished experiment with algo=mpgd, task = super_resolution"
-echo "----------------------------------------"
+# python ffhq_sample_condition.py \
+#     --model_config=configs/model_config.yaml \
+#     --diffusion_config=configs/mgpd_diffusion_config.yaml \
+#     --task_config=configs/super_resolution_config.yaml \
+#     --timestep=50 \
+#     --scale=17.5 \
+#     --method="mpgd_wo_proj" \
+#     --algo="mpgd"\
+#     --noise_type="shot"\
+#     --noise_scale=60
+# echo "Finished experiment with algo=mpgd, task = super_resolution"
+# echo "----------------------------------------"
 
 
-# speckle
-echo "Running experiment with algo=dmplug"
-python ffhq_sample_condition.py \
-    --model_config=configs/model_config.yaml \
-    --diffusion_config=configs/mgpd_diffusion_config.yaml \
-    --task_config=configs/super_resolution_config.yaml \
-    --timestep=50 \
-    --scale=17.5 \
-    --method="mpgd_wo_proj" \
-    --algo="mpgd"\
-    --noise_type="speckle"\
-    --noise_scale=0.15
-echo "Finished experiment with algo=dmplug, task = super_resolution"
-echo "----------------------------------------"
+# # echo "Running experiment with algo=mpgd"
+# python ffhq_sample_condition.py \
+#     --model_config=configs/model_config.yaml \
+#     --diffusion_config=configs/mgpd_diffusion_config.yaml \
+#     --task_config=configs/super_resolution_config.yaml \
+#     --timestep=50 \
+#     --scale=17.5 \
+#     --method="mpgd_wo_proj" \
+#     --algo="mpgd"\
+#     --noise_type="shot"\
+#     --noise_scale=25
+# echo "Finished experiment with algo=mpgd, task = super_resolution"
+# echo "----------------------------------------"
 
-## speckle
-echo "Running experiment with algo=dmplug"
-python ffhq_sample_condition.py \
-    --model_config=configs/model_config.yaml \
-    --diffusion_config=configs/mgpd_diffusion_config.yaml \
-    --task_config=configs/super_resolution_config.yaml \
-    --timestep=50 \
-    --scale=17.5 \
-    --method="mpgd_wo_proj" \
-    --algo="mpgd"\
-    --noise_type="speckle"\
-    --noise_scale=0.20
-echo "Finished experiment with algo=dmplug, task = super_resolution"
-echo "----------------------------------------"
+
+# # speckle
+# echo "Running experiment with algo=dmplug"
+# python ffhq_sample_condition.py \
+#     --model_config=configs/model_config.yaml \
+#     --diffusion_config=configs/mgpd_diffusion_config.yaml \
+#     --task_config=configs/super_resolution_config.yaml \
+#     --timestep=50 \
+#     --scale=17.5 \
+#     --method="mpgd_wo_proj" \
+#     --algo="mpgd"\
+#     --noise_type="speckle"\
+#     --noise_scale=0.15
+# echo "Finished experiment with algo=dmplug, task = super_resolution"
+# echo "----------------------------------------"
+
+# ## speckle
+# echo "Running experiment with algo=dmplug"
+# python ffhq_sample_condition.py \
+#     --model_config=configs/model_config.yaml \
+#     --diffusion_config=configs/mgpd_diffusion_config.yaml \
+#     --task_config=configs/super_resolution_config.yaml \
+#     --timestep=50 \
+#     --scale=17.5 \
+#     --method="mpgd_wo_proj" \
+#     --algo="mpgd"\
+#     --noise_type="speckle"\
+#     --noise_scale=0.20
+# echo "Finished experiment with algo=dmplug, task = super_resolution"
+# echo "----------------------------------------"
 
 
 

@@ -51,6 +51,37 @@ class EarlyStopping:
     def stop_training(self):
         return self.early_stop
 
+def log_metrics_to_tensorboard(writer, metrics, step, img_index=None, prefix=''):
+    """将指标记录到TensorBoard
+    
+    参数:
+        writer: TensorBoard SummaryWriter对象
+        metrics: 包含指标值的字典
+        step: 训练步骤
+        img_index: 可选的图像索引，用于区分不同图像
+        prefix: 指标名称前缀
+    """
+    if writer is None:
+        return  # 如果没有提供writer，直接返回
+        
+    # 为每个指标添加适当的前缀（如果提供）
+    tag_prefix = f"{prefix}/" if prefix else ""
+    
+    # 如果提供了图像索引，在标签中加入图像索引
+    if img_index is not None:
+        for metric_name, value in metrics.items():
+            if isinstance(value, list):
+                # 如果值是列表，取最后一个值
+                value = value[-1] if value else 0
+            writer.add_scalar(f"{tag_prefix}{metric_name}/image_{img_index}", value, step)
+    else:
+        # 没有图像索引，直接记录指标
+        for metric_name, value in metrics.items():
+            if isinstance(value, list):
+                # 如果值是列表，取最后一个值
+                value = value[-1] if value else 0
+            writer.add_scalar(f"{tag_prefix}{metric_name}", value, step)
+
 def plot_and_log_curves(writer, losses, psnrs, ssims, lpipss, out_path, img_index=None):
     """绘制并记录训练曲线到TensorBoard
     
@@ -63,6 +94,17 @@ def plot_and_log_curves(writer, losses, psnrs, ssims, lpipss, out_path, img_inde
         out_path: 输出路径
         img_index: 可选的图像索引
     """
+    # 确保路径存在
+    import os
+    os.makedirs(out_path, exist_ok=True)
+    
+    # 避免matplotlib导入问题
+    import matplotlib
+    matplotlib.use('Agg')  # 使用非交互式后端
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import torch
+    
     # 绘制训练曲线
     fig, axs = plt.subplots(2, 2, figsize=(15, 10))
     
@@ -102,13 +144,23 @@ def plot_and_log_curves(writer, losses, psnrs, ssims, lpipss, out_path, img_inde
     plt.close()
     
     # 将曲线图添加到TensorBoard
-    curves_img = plt.imread(curves_path)
-    if img_index is not None:
-        writer.add_image(f'Curves/image_{img_index}', 
-                         torch.from_numpy(curves_img).permute(2, 0, 1), 0)
-    else:
-        writer.add_image('Curves', 
-                         torch.from_numpy(curves_img).permute(2, 0, 1), 0)
+    if writer is not None:
+        try:
+            curves_img = plt.imread(curves_path)
+            img_tensor = torch.from_numpy(curves_img)
+            
+            # 确保图像具有正确的维度
+            if img_tensor.dim() == 3 and img_tensor.shape[2] == 3:  # [H, W, C]
+                img_tensor = img_tensor.permute(2, 0, 1)  # 转换为[C, H, W]
+            elif img_tensor.dim() == 2:  # [H, W]
+                img_tensor = img_tensor.unsqueeze(0)  # 转换为[1, H, W]
+                
+            if img_index is not None:
+                writer.add_image(f'Curves/image_{img_index}', img_tensor, 0)
+            else:
+                writer.add_image('Curves', img_tensor, 0)
+        except Exception as e:
+            print(f"向TensorBoard添加曲线图像时出错: {e}")
         
 def log_metrics_to_tensorboard(writer, metrics, step, img_index=None, prefix=''):
     """将指标记录到TensorBoard
@@ -159,26 +211,68 @@ def compute_metrics(
             'lpips': [],
         }
 
+    # 确保样本和参考图像具有正确的维度
+    # 首先检查并标准化样本图像
+    if sample.dim() == 3:  # 如果样本是[C, H, W]
+        sample = sample.unsqueeze(0)  # 转换为[1, C, H, W]
+    
+    # 确保ref_img也是[B, C, H, W]格式
+    if ref_img.dim() == 3:  # 如果参考图像是[C, H, W]
+        ref_img = ref_img.unsqueeze(0)  # 转换为[1, C, H, W]
+    
     # 转换为numpy格式计算指标
     ref_numpy = ref_img.cpu().squeeze().numpy()
-    output_numpy = sample.detach().cpu().squeeze().numpy().transpose(1, 2, 0)
-    ref_numpy_cal = ref_numpy.transpose(1, 2, 0)
+    
+    # 确保样本图像有正确的形状用于numpy处理
+    output_numpy = sample.detach().cpu().squeeze().numpy()
+    
+    # 检查输出是否仍然是[C, H, W]格式
+    if output_numpy.ndim == 3 and output_numpy.shape[0] == 3:
+        output_numpy = output_numpy.transpose(1, 2, 0)  # 转换为[H, W, C]用于计算指标
+    
+    # 准备用于计算指标的数据
+    if ref_numpy.ndim == 3 and ref_numpy.shape[0] == 3:
+        ref_numpy_cal = ref_numpy.transpose(1, 2, 0)  # 转换为[H, W, C]
+    else:
+        ref_numpy_cal = ref_numpy
 
     # 计算PSNR
-    tmp_psnr = peak_signal_noise_ratio(ref_numpy_cal, output_numpy)
-    metrics['psnr'].append(tmp_psnr)
+    try:
+        from skimage.metrics import peak_signal_noise_ratio
+        tmp_psnr = peak_signal_noise_ratio(ref_numpy_cal, output_numpy)
+        metrics['psnr'].append(tmp_psnr)
+    except Exception as e:
+        print(f"PSNR计算错误: {e}")
+        print(f"ref_numpy_cal形状: {ref_numpy_cal.shape}")
+        print(f"output_numpy形状: {output_numpy.shape}")
+        tmp_psnr = 0
+        metrics['psnr'].append(tmp_psnr)
 
     # 计算SSIM
-    tmp_ssim = structural_similarity(ref_numpy_cal, output_numpy, channel_axis=2, data_range=1)
-    metrics['ssim'].append(tmp_ssim)
+    try:
+        from skimage.metrics import structural_similarity
+        tmp_ssim = structural_similarity(ref_numpy_cal, output_numpy, channel_axis=2, data_range=1)
+        metrics['ssim'].append(tmp_ssim)
+    except Exception as e:
+        print(f"SSIM计算错误: {e}")
+        tmp_ssim = 0
+        metrics['ssim'].append(tmp_ssim)
 
     # 计算LPIPS
-    rec_img_torch = torch.from_numpy(output_numpy).permute(2, 0, 1).unsqueeze(0).float().to(device)
-    gt_img_torch = torch.from_numpy(ref_numpy_cal).permute(2, 0, 1).unsqueeze(0).float().to(device)
-    lpips_alex = loss_fn_alex(gt_img_torch, rec_img_torch).item()
-    metrics['lpips'].append(lpips_alex)
+    try:
+        import torch
+        # 为LPIPS准备正确的张量
+        rec_img_torch = torch.from_numpy(output_numpy).permute(2, 0, 1).unsqueeze(0).float().to(device)
+        gt_img_torch = torch.from_numpy(ref_numpy_cal).permute(2, 0, 1).unsqueeze(0).float().to(device)
+        lpips_alex = loss_fn_alex(gt_img_torch, rec_img_torch).item()
+        metrics['lpips'].append(lpips_alex)
+    except Exception as e:
+        print(f"LPIPS计算错误: {e}")
+        lpips_alex = 0
+        metrics['lpips'].append(lpips_alex)
 
     # 确保输出目录存在
+    import os
     os.makedirs(out_path, exist_ok=True)
     
     # 将结果写入CSV文件
@@ -186,6 +280,7 @@ def compute_metrics(
     # 如果文件不存在或epoch是第一个epoch，则写入标题行
     file_exists = os.path.exists(file_path) and os.path.getsize(file_path) > 0
     
+    import csv
     with open(file_path, mode="a", newline="") as file:
         writer = csv.writer(file)
         if not file_exists:
@@ -198,7 +293,120 @@ def compute_metrics(
     
     return metrics
 
+def save_image(img_tensor, path, normalize=True):
+    """
+    保存张量图像到文件系统，处理各种格式和维度问题
+    
+    参数:
+        img_tensor (torch.Tensor): 图像张量，可以是[B, C, H, W], [C, H, W]或[H, W, C]格式
+        path (str): 保存路径
+        normalize (bool): 是否规范化图像到[0, 1]范围
+    """
+    import os
+    import torch
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from PIL import Image
+    
+    # 确保路径存在
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    
+    # 将tensor转换到CPU并分离梯度
+    img = img_tensor.detach().cpu()
+    
+    # 确保图像有正确的维度
+    if img.dim() == 4:  # [B, C, H, W]
+        img = img.squeeze(0)  # 转换为[C, H, W]
+    
+    # 转换为numpy数组
+    img_np = img.numpy()
+    
+    # 检查并调整图像格式
+    if img_np.shape[0] == 3 and len(img_np.shape) == 3:  # [C, H, W]
+        img_np = np.transpose(img_np, (1, 2, 0))  # 转换为[H, W, C]
+    
+    # 规范化图像
+    if normalize:
+        img_np = normalize_image(img_np)
+    
+    # 确保图像值在有效范围内
+    img_np = np.clip(img_np, 0, 1)
+    
+    # 保存图像
+    try:
+        # 使用PIL保存
+        if img_np.shape[-1] == 3:  # RGB图像
+            img_pil = Image.fromarray((img_np * 255).astype(np.uint8))
+            img_pil.save(path)
+        else:  # 灰度图像
+            plt.imsave(path, img_np, cmap='gray')
+    except Exception as e:
+        print(f"保存图像到{path}时出错: {e}")
+        # 尝试使用matplotlib作为备选
+        plt.figure(figsize=(10, 10))
+        if img_np.ndim == 3 and img_np.shape[-1] == 3:
+            plt.imshow(img_np)
+        else:
+            plt.imshow(img_np, cmap='gray')
+        plt.axis('off')
+        plt.savefig(path, bbox_inches='tight', pad_inches=0)
+        plt.close()
 
+def normalize_image(img):
+    """
+    将图像规范化到[0, 1]范围
+    
+    参数:
+        img: numpy数组，图像数据
+    
+    返回:
+        规范化后的图像
+    """
+    img_min = img.min()
+    img_max = img.max()
+    
+    # 避免除以零
+    if img_max > img_min:
+        img = (img - img_min) / (img_max - img_min)
+    return img
+
+def clear_color_fixed(x):
+    """
+    处理tensor图像用于显示，解决维度问题
+    
+    参数:
+        x (torch.Tensor): 输入图像张量
+        
+    返回:
+        numpy.ndarray: 处理后的图像，格式为[H, W, C]，范围在[0, 1]
+    """
+    import torch
+    import numpy as np
+    
+    # 处理复数tensor
+    if torch.is_complex(x):
+        x = torch.abs(x)
+    
+    # 分离梯度并转移到CPU
+    x = x.detach().cpu()
+    
+    # 处理batch维度
+    if x.dim() == 4:
+        x = x.squeeze(0)
+    
+    # 转换为numpy
+    x_np = x.numpy()
+    
+    # 调整通道顺序
+    if x_np.shape[0] == 3 or x_np.shape[0] == 1:  # [C, H, W]
+        x_np = np.transpose(x_np, (1, 2, 0))
+        
+    # 如果是单通道，去掉通道维度
+    if x_np.shape[-1] == 1:
+        x_np = x_np.squeeze(-1)
+    
+    # 规范化并返回
+    return normalize_image(x_np)
 
 def DMPlug(
     model,
@@ -786,39 +994,100 @@ def RED_diff(
 
 
 
-def acce_RED_diff(   ##  best performence
-    model, sampler, measurement_cond_fn, ref_img, y_n , device, model_config,measure_config,operator,fname,
-    iter_step=4, iteration=1000, denoiser_step=10, stop_patience=5, 
-    early_stopping_threshold=0.01, lr=0.02, out_path='./outputs/', mask=None, random_seed=None):
-
+def acce_RED_diff(   
+    model, sampler, measurement_cond_fn, ref_img, y_n, device, model_config,
+    measure_config, operator, fname, iter_step=3, iteration=1000, denoiser_step=10, 
+    stop_patience=5, early_stopping_threshold=0.01, lr=0.02, out_path='./outputs/', 
+    mask=None, random_seed=None, writer=None, img_index=None
+):
+    """
+    acce_RED_diff算法: 加速版的RED (Regularization by Denoising) 使用扩散模型
+    
+    参数:
+        model: 扩散模型
+        sampler: 扩散采样器
+        measurement_cond_fn: 测量条件函数
+        ref_img: 参考图像
+        y_n: 噪声测量值
+        device: 计算设备
+        model_config: 模型配置
+        measure_config: 测量配置
+        operator: 测量算子
+        fname: 输出文件名
+        iter_step: 迭代步数
+        iteration: 总迭代次数
+        denoiser_step: 去噪步数
+        stop_patience: 早停耐心值
+        early_stopping_threshold: 早停阈值
+        lr: 学习率
+        out_path: 输出路径
+        mask: 掩码
+        random_seed: 随机种子
+        writer: TensorBoard SummaryWriter
+        img_index: 图像索引
+        
+    返回:
+        tuple: (重建图像, 指标字典)
+    """
     # 使用传入的随机种子重新设置随机种子
-    torch.manual_seed(random_seed)
-    torch.cuda.manual_seed(random_seed)
-    torch.cuda.manual_seed_all(random_seed)
+    if random_seed is not None:
+        torch.manual_seed(random_seed)
+        torch.cuda.manual_seed(random_seed)
+        torch.cuda.manual_seed_all(random_seed)
+        np.random.seed(random_seed)
+    
+    # 记录配置到TensorBoard
+    if writer is not None and img_index is not None:
+        writer.add_text(f'acce_RED_diff/Image_{img_index}/Config', 
+                       f'Iterations: {iteration}\n'
+                       f'Learning Rate: {lr}\n'
+                       f'Iter Step: {iter_step}\n'
+                       f'Denoiser Steps: {denoiser_step}\n'
+                       f'Early Stopping: threshold={early_stopping_threshold}, patience={stop_patience}\n'
+                       f'Random Seed: {random_seed}', 0)
+        
+        # 记录参考图像和测量图像
+        if ref_img.dim() == 4:  # [B, C, H, W]
+            ref_to_log = (ref_img[0] + 1) / 2  # 规范化到[0,1]
+        else:  # [C, H, W]
+            ref_to_log = (ref_img + 1) / 2
+        writer.add_image(f'acce_RED_diff/Image_{img_index}/Reference', ref_to_log, 0)
+        
+        if y_n.dim() == 4:  # [B, C, H, W]
+            y_to_log = (y_n[0] + 1) / 2  # 规范化到[0,1]
+        else:  # [C, H, W]
+            y_to_log = (y_n + 1) / 2
+        writer.add_image(f'acce_RED_diff/Image_{img_index}/Measurement', y_to_log, 0)
     
     # 初始化
     Z = torch.randn((1, 3, model_config['image_size'], model_config['image_size']), device=device)
     
+    # 记录初始随机噪声
+    if writer is not None and img_index is not None:
+        writer.add_image(f'acce_RED_diff/Image_{img_index}/Initial_Noise', (Z[0] + 1) / 2, 0)
+    
+    # 初始化损失函数和优化器
     loss_fn_alex = lpips.LPIPS(net='alex').to(device)
-    criterion = torch.nn.MSELoss().to(device)
-    l1_loss = torch.nn.L1Loss()
-    losses = []
-
-    # alpha = torch.randn((1, 3, model_config['image_size'], model_config['image_size']), device=device,requires_grad=True)
-
-
+    criterion = nn.MSELoss().to(device)
+    l1_loss = nn.L1Loss().to(device)
+    
+    # 设定需要优化的参数
     alpha = torch.tensor(0.5, requires_grad=True, device=device)
     mu = torch.tensor(1.0, requires_grad=True, device=device)
 
-    # optimizer = torch.optim.Adam([x], lr=0.01)
-    # optimizer = torch.optim.Adam([Z], lr=0.02)
+    # 记录指标和损失
+    losses = []
+    psnrs = []
+    ssims = []
+    lpipss = []
 
     # 初始采样过程
+    sample = Z
     with torch.no_grad():  # 禁用梯度计算
-        for i, t in enumerate(tqdm(list(range(denoiser_step))[::-1], desc="Denoising Steps")):
-            time = torch.tensor([t] * ref_img.shape[0], device=device)
+        for i, t in enumerate(tqdm(list(range(denoiser_step))[::-1], desc="初始去噪步骤")):
+            time = torch.tensor([t] * (1 if ref_img.dim() == 3 else ref_img.shape[0]), device=device)
             if i >= denoiser_step - iter_step:
-                print(f"Stopping at the last {iter_step} steps (step {i+1})")
+                print(f"在最后{iter_step}步停止（步骤{i+1}）")
                 break
             if i == 0:
                 sample, pred_start = sampler.p_sample(
@@ -828,132 +1097,321 @@ def acce_RED_diff(   ##  best performence
                 sample, pred_start = sampler.p_sample(
                     model=model, x=sample, t=time, measurement=y_n, measurement_cond_fn=measurement_cond_fn, mask=mask
                 )
-                
+        
+        # 初始采样后记录指标
+        if writer is not None and img_index is not None:
+            writer.add_image(f'acce_RED_diff/Image_{img_index}/Initial_Sample', (sample[0] + 1) / 2, 0)
 
     # 优化过程
     sample = sample.detach().clone().requires_grad_(True)
-    # optimizer = torch.optim.Adam([sample], lr=lr)
+    optimizer = torch.optim.Adam([
+        {'params': sample, 'lr': lr}, 
+        {'params': alpha, 'lr': lr}
+    ])
 
-    optimizer = torch.optim.Adam([{'params': sample, 'lr': lr}, {'params': alpha, 'lr': lr}])    
+    # 创建早停对象
+    class EarlyStopping:
+        def __init__(self, patience=5, min_delta=0, verbose=False):
+            self.patience = patience
+            self.min_delta = min_delta
+            self.verbose = verbose
+            self.counter = 0
+            self.best_score = None
+            self.early_stop = False
 
-    for epoch in tqdm(range(iteration), desc="Training Epochs"):
+        def __call__(self, score):
+            if self.best_score is None:
+                self.best_score = score
+            elif score > self.best_score - self.min_delta:
+                self.counter += 1
+                if self.verbose:
+                    print(f"早停等待: {self.counter}/{self.patience}")
+                if self.counter >= self.patience:
+                    self.early_stop = True
+            else:
+                self.best_score = score
+                self.counter = 0
+                
+        def stop_training(self):
+            return self.early_stop
+    
+    early_stopper = EarlyStopping(patience=stop_patience, min_delta=early_stopping_threshold, verbose=True)
+    best_loss = float('inf')
+    best_sample = None
+    best_metrics = None
+    best_epoch = 0
+    
+    pbar = tqdm(range(iteration), desc="acce_RED_diff优化")
+    for epoch in pbar:
         model.eval()
         optimizer.zero_grad()
         x_t = sample
         x_t.requires_grad_(True)
-        # 更新 x_t
+        
+        # 更新x_t
         for i, t in enumerate(list(range(iter_step))[::-1]):
-            time = torch.tensor([t] * ref_img.shape[0], device=device)
+            time = torch.tensor([t] * (1 if ref_img.dim() == 3 else ref_img.shape[0]), device=device)
             x_t, pred_start = sampler.p_sample(
                 model=model, x=x_t, t=time, measurement=y_n, measurement_cond_fn=measurement_cond_fn, mask=mask
             )
         
-        if mask is not None:
-            difference = y_n - operator.forward(x_t, mask=mask)
-        else:
-            difference = y_n - operator.forward(x_t)
+        # 计算数据保真项的梯度
+        try:
+            if mask is not None:
+                difference = y_n - operator.forward(x_t, mask=mask)
+            else:
+                difference = y_n - operator.forward(x_t)
 
-        norm = torch.linalg.norm(difference)
-        norm_grad = torch.autograd.grad(outputs=norm, inputs=x_t, retain_graph=True)[0]
+            norm = torch.linalg.norm(difference)
+            norm_grad = torch.autograd.grad(outputs=norm, inputs=x_t, retain_graph=True)[0]
+            
+            # 计算RED更新
+            v_k = x_t - mu * norm_grad
+            
+            # 混合更新
+            x_k = alpha * x_t + (1 - alpha) * v_k
+            
+            # 计算损失
+            if mask is not None:
+                loss = l1_loss(operator.forward(x_k, mask=mask), y_n)
+            else:
+                loss = l1_loss(operator.forward(x_k), y_n)
+            
+            losses.append(loss.item())
+            
+            # 反向传播和优化步骤
+            loss.backward(retain_graph=True)
+            optimizer.step()
+            
+            # 更新进度条
+            pbar.set_postfix({'loss': loss.item(), 'alpha': alpha.item()})
+            
+            # 计算评价指标
+            with torch.no_grad():
+                # 确保ref_img和x_k维度一致
+                if ref_img.dim() == 4 and x_k.dim() == 3:
+                    x_k_compare = x_k.unsqueeze(0)
+                else:
+                    x_k_compare = x_k
+                
+                # 转换为numpy计算指标
+                x_k_np = x_k_compare.detach().cpu().squeeze().numpy()
+                ref_np = ref_img.detach().cpu().squeeze().numpy()
+                
+                # 确保是[H, W, C]格式
+                if x_k_np.shape[0] == 3 and len(x_k_np.shape) == 3:
+                    x_k_np = np.transpose(x_k_np, (1, 2, 0))
+                if ref_np.shape[0] == 3 and len(ref_np.shape) == 3:
+                    ref_np = np.transpose(ref_np, (1, 2, 0))
+                
+                # 计算PSNR
+                try:
+                    from skimage.metrics import peak_signal_noise_ratio
+                    current_psnr = peak_signal_noise_ratio(ref_np, x_k_np)
+                    psnrs.append(current_psnr)
+                except Exception as e:
+                    print(f"PSNR计算错误: {e}")
+                    current_psnr = 0
+                    psnrs.append(current_psnr)
+                
+                # 计算SSIM
+                try:
+                    from skimage.metrics import structural_similarity
+                    current_ssim = structural_similarity(ref_np, x_k_np, multichannel=True, data_range=1)
+                    ssims.append(current_ssim)
+                except Exception as e:
+                    print(f"SSIM计算错误: {e}, 尝试使用channel_axis参数")
+                    try:
+                        current_ssim = structural_similarity(ref_np, x_k_np, channel_axis=2, data_range=1)
+                        ssims.append(current_ssim)
+                    except Exception as e2:
+                        print(f"SSIM计算仍然失败: {e2}")
+                        current_ssim = 0
+                        ssims.append(current_ssim)
+                
+                # 计算LPIPS
+                try:
+                    # 为LPIPS准备张量
+                    x_k_lpips = torch.from_numpy(x_k_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
+                    ref_lpips = torch.from_numpy(ref_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
+                    current_lpips = loss_fn_alex(x_k_lpips, ref_lpips).item()
+                    lpipss.append(current_lpips)
+                except Exception as e:
+                    print(f"LPIPS计算错误: {e}")
+                    current_lpips = 0
+                    lpipss.append(current_lpips)
+                
+                # 记录指标到TensorBoard
+                if writer is not None and img_index is not None:
+                    writer.add_scalar(f'acce_RED_diff/Image_{img_index}/Loss', loss.item(), epoch)
+                    writer.add_scalar(f'acce_RED_diff/Image_{img_index}/PSNR', current_psnr, epoch)
+                    writer.add_scalar(f'acce_RED_diff/Image_{img_index}/SSIM', current_ssim, epoch)
+                    writer.add_scalar(f'acce_RED_diff/Image_{img_index}/LPIPS', current_lpips, epoch)
+                    writer.add_scalar(f'acce_RED_diff/Image_{img_index}/Alpha', alpha.item(), epoch)
+                    
+                    # 每隔10轮记录一次图像
+                    if epoch % 10 == 0:
+                        writer.add_image(f'acce_RED_diff/Image_{img_index}/Reconstruction/Epoch_{epoch}', 
+                                       (x_k[0] if x_k.dim() == 4 else x_k + 1) / 2, epoch)
+                
+                # 检查早停
+                early_stopper(loss.item())
+                if early_stopper.stop_training():
+                    print(f"早停触发，在第{epoch+1}轮停止训练")
+                    break
+                
+                # 保存最佳样本
+                if loss.item() < best_loss:
+                    best_loss = loss.item()
+                    best_sample = x_k.clone().detach()
+                    best_metrics = {
+                        'psnr': current_psnr,
+                        'ssim': current_ssim,
+                        'lpips': current_lpips
+                    }
+                    best_epoch = epoch
+                    
+                    # 记录最佳样本到TensorBoard
+                    if writer is not None and img_index is not None:
+                        writer.add_image(f'acce_RED_diff/Image_{img_index}/Best/Reconstruction', 
+                                       (best_sample[0] if best_sample.dim() == 4 else best_sample + 1) / 2, best_epoch)
+                        writer.add_text(f'acce_RED_diff/Image_{img_index}/Best/Info', 
+                                       f'Epoch: {best_epoch}\n'
+                                       f'Loss: {best_loss:.6f}\n'
+                                       f'PSNR: {current_psnr:.4f}\n'
+                                       f'SSIM: {current_ssim:.4f}\n'
+                                       f'LPIPS: {current_lpips:.4f}', best_epoch)
+            
+        except Exception as e:
+            print(f"优化过程中出错: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
+    
+    # 如果没有找到最佳样本，使用最后一个样本
+    if best_sample is None:
+        best_sample = x_k
+        best_metrics = {
+            'psnr': psnrs[-1] if psnrs else 0,
+            'ssim': ssims[-1] if ssims else 0,
+            'lpips': lpipss[-1] if lpipss else 0
+        }
+    
+    # 保存结果曲线
+    try:
+        if losses:
+            import matplotlib.pyplot as plt
+            
+            # 创建图表
+            fig, axs = plt.subplots(2, 2, figsize=(12, 10))
+            
+            # 损失曲线
+            axs[0, 0].plot(losses)
+            axs[0, 0].set_title('Loss')
+            axs[0, 0].set_xlabel('Iterations')
+            axs[0, 0].set_ylabel('Loss')
+            
+            # PSNR曲线
+            if psnrs:
+                axs[0, 1].plot(psnrs)
+                axs[0, 1].set_title('PSNR')
+                axs[0, 1].set_xlabel('Iterations')
+                axs[0, 1].set_ylabel('PSNR (dB)')
+            
+            # SSIM曲线
+            if ssims:
+                axs[1, 0].plot(ssims)
+                axs[1, 0].set_title('SSIM')
+                axs[1, 0].set_xlabel('Iterations')
+                axs[1, 0].set_ylabel('SSIM')
+            
+            # LPIPS曲线
+            if lpipss:
+                axs[1, 1].plot(lpipss)
+                axs[1, 1].set_title('LPIPS')
+                axs[1, 1].set_xlabel('Iterations')
+                axs[1, 1].set_ylabel('LPIPS')
+            
+            plt.tight_layout()
+            
+            # 保存图表
+            curves_path = os.path.join(out_path, f'acce_red_diff_curves_{img_index if img_index is not None else ""}.png')
+            plt.savefig(curves_path)
+            plt.close()
+            
+            # 添加到TensorBoard
+            if writer is not None and img_index is not None and os.path.exists(curves_path):
+                img = torchvision.transforms.ToTensor()(plt.imread(curves_path))
+                writer.add_image(f'acce_RED_diff/Image_{img_index}/Curves', img, 0)
+    except Exception as e:
+        print(f"保存结果曲线时出错: {e}")
+    
+    # 保存重建图像
+    try:
+        import os
+        os.makedirs(os.path.join(out_path, 'recon'), exist_ok=True)
+        os.makedirs(os.path.join(out_path, 'input'), exist_ok=True)
+        os.makedirs(os.path.join(out_path, 'label'), exist_ok=True)
         
-        # norm_log = torch.log(norm + 1)  # log(1 + norm) 确保不出现负数
-        # mu = 10 *torch.sigmoid(norm_log)
-
-        # # 使用幂次衰减
-        # scale = 30  # 控制衰减的幅度
-        # p = 1.5  # 控制衰减的速度，p 越大，衰减越快   幂次衰减
-        # mu = 10 * (norm / (norm + scale)) ** p
-
-        # mu = torch.sigmoid(norm)
-        # Print mu in real-time
-        # print(f"Current value of diff and mu:{norm.item()}, {mu.item()}")
-        v_k = x_t - mu*  norm_grad
+        # 使用修复的图像保存函数
+        def save_tensor_image(tensor, path):
+            """保存张量图像到文件"""
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            # 确保是CPU张量并分离梯度
+            img = tensor.detach().cpu()
+            
+            # 转换为numpy数组
+            if img.dim() == 4:  # [B, C, H, W]
+                img = img.squeeze(0)  # 转换为[C, H, W]
+            
+            img_np = img.numpy()
+            
+            # 调整通道顺序和归一化
+            if img_np.shape[0] == 3:  # [C, H, W]
+                img_np = np.transpose(img_np, (1, 2, 0))  # 转换为[H, W, C]
+            
+            # 规范化到[0, 1]范围
+            img_np = (img_np + 1) / 2  # 从[-1,1]转换到[0,1]
+            img_np = np.clip(img_np, 0, 1)  # 确保在[0,1]范围内
+            
+            # 保存图像
+            plt.imsave(path, img_np)
         
-        x_k = alpha*x_t + (1-alpha) * v_k
+        # 保存图像
+        save_tensor_image(best_sample, os.path.join(out_path, 'recon', fname))
+        save_tensor_image(y_n, os.path.join(out_path, 'input', fname))
+        save_tensor_image(ref_img, os.path.join(out_path, 'label', fname))
         
-        # 计算损失并优化
-        if mask is not None:
-        # loss = criterion(operator.forward(x_t), y_n)
-            loss = l1_loss(operator.forward(x_k, mask=mask), y_n)
-        else:            
-            loss = l1_loss(operator.forward(x_k), y_n)
-
-        # loss.backward()
-        loss.backward(retain_graph=True)
-
-        optimizer.step()
-        losses.append(loss.item())
-
-        # # 计算并记录指标
-        with torch.no_grad():
-            metrics = compute_metrics(
-            sample=x_k,
-            ref_img=ref_img,
-            out_path=out_path,
-            device=device,
-            loss_fn_alex=loss_fn_alex,
-            epoch=epoch,
-            iteration=iteration,
-            metrics=None  # 初次调用时不传递 metrics，函数会自动初始化
-        )
-
-        # # 早停机制
-        # mean_val = np.mean(output_numpy)
-        # if epoch > 0:
-        #     mean_changes.append(mean_val)
-        #     if len(mean_changes) >= stop_patience:
-        #         recent_mean_changes = mean_changes[-stop_patience:]
-        #         if all(abs(recent_mean_changes[i] - recent_mean_changes[i-1]) < early_stopping_threshold for i in range(1, len(recent_mean_changes))):
-        #             print(f"Early stopping triggered after {epoch + 1} epochs due to mean stability.")
-        #             break
-        # else:
-        #     mean_changes.append(mean_val)
-
-    # Save results
-    # Z_np = (Z.detach().cpu().numpy().squeeze(0)).clip(0, 1)
-    # plt.imsave(os.path.join(out_path, 'Z_image.png'), Z_np.transpose(1, 2, 0))
-    plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(x_k))
-
-    # # Plot losses
-    # plt.plot(losses, label='Loss')
-    # plt.legend()
-    # plt.savefig(os.path.join(out_path, f"loss_{fname.split('.')[0]}.png"))    
-
-    # # Plot PSNR values
-    # plt.plot(metrics['psnr'])
-    # plt.savefig(os.path.join(out_path, 'psnr.png'))
-    # plt.close()
+        # 记录最终图像到TensorBoard
+        if writer is not None and img_index is not None:
+            writer.add_image(f'acce_RED_diff/Image_{img_index}/Final/Reconstruction', 
+                           (best_sample[0] if best_sample.dim() == 4 else best_sample + 1) / 2, 0)
+            
+            # 记录误差图
+            try:
+                # 确保维度一致
+                if ref_img.dim() == 4 and best_sample.dim() == 3:
+                    best_sample_compare = best_sample.unsqueeze(0)
+                elif ref_img.dim() == 3 and best_sample.dim() == 4:
+                    ref_img_compare = ref_img.unsqueeze(0)
+                else:
+                    best_sample_compare = best_sample
+                    ref_img_compare = ref_img
+                
+                error_map = torch.abs(ref_img_compare - best_sample_compare)
+                # 归一化误差图
+                error_map = error_map / (error_map.max() + 1e-8)
+                writer.add_image(f'acce_RED_diff/Image_{img_index}/Error_Map', 
+                               error_map[0] if error_map.dim() == 4 else error_map, 0)
+            except Exception as e:
+                print(f"创建误差图时出错: {e}")
+    except Exception as e:
+        print(f"保存图像时出错: {e}")
     
-    plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
-    plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
-    
-    
-    # 转换最佳图像和参考图像为 numpy 格式
-    best_img_np = x_k.cpu().squeeze().detach().numpy().transpose(1, 2, 0) 
-    ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
-
-    # 计算 PSNR
-    final_psnr = peak_signal_noise_ratio(ref_img_np, best_img_np)
-    # 计算 SSIM
-    final_ssim = structural_similarity(ref_img_np, best_img_np, channel_axis=2, data_range=1)
-    # 计算 LPIPS
-    best_img_torch = torch.from_numpy(best_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
-    ref_img_torch = torch.from_numpy(ref_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
-    final_lpips = loss_fn_alex(ref_img_torch, best_img_torch).item()
-
-    # 将结果组织到字典中
-    final_metric = {
-        'psnr': final_psnr,
-        'ssim': final_ssim,
-        'lpips': final_lpips
-    }
-    
-    
-    # 打印最终的 PSNR, SSIM, LPIPS
-    print(f"Final metrics between best reconstructed image and reference image:")
-    print(f"PSNR: {final_psnr:.4f}, SSIM: {final_ssim:.4f}, LPIPS: {final_lpips:.4f}")
-    
-    return x_k , final_metric
+    # 返回最佳样本和指标
+    return best_sample, best_metrics
 
 
 
@@ -1264,32 +1722,13 @@ def acce_RED_earlystop(   ##  best performence
             print(f"Training stopped at epoch {epoch+1} due to early stopping.")
             break
         
-        # # 早停机制
-        # mean_val = np.mean(output_numpy)
-        # if epoch > 0:
-        #     mean_changes.append(mean_val)
-        #     if len(mean_changes) >= stop_patience:
-        #         recent_mean_changes = mean_changes[-stop_patience:]
-        #         if all(abs(recent_mean_changes[i] - recent_mean_changes[i-1]) < early_stopping_threshold for i in range(1, len(recent_mean_changes))):
-        #             print(f"Early stopping triggered after {epoch + 1} epochs due to mean stability.")
-        #             break
-        # else:
-        #     mean_changes.append(mean_val)
+
 
     # Save results
     Z_np = (Z.detach().cpu().numpy().squeeze(0)).clip(0, 1)
     plt.imsave(os.path.join(out_path, 'Z_image.png'), Z_np.transpose(1, 2, 0))
     plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(x_k))
 
-    # # Plot losses
-    # plt.plot(losses, label='Loss')
-    # plt.legend()
-    # plt.savefig(os.path.join(out_path, f"loss_{fname.split('.')[0]}.png"))    
-
-    # # Plot PSNR values
-    # plt.plot(metrics['psnr'])
-    # plt.savefig(os.path.join(out_path, 'psnr.png'))
-    # plt.close()
     
     plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
     plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
@@ -1323,239 +1762,69 @@ def acce_RED_earlystop(   ##  best performence
     return x_k , final_metric
 
 
-# def acce_RED_diff_pro(   #####   effective with hard param mu
-#     model, sampler, measurement_cond_fn, ref_img, y_n , device, model_config,measure_config,operator,fname,
-#     iter_step=4, iteration=1000, denoiser_step=10, stop_patience=5, 
-#     early_stopping_threshold=0.01, lr=0.02, out_path='./outputs/', mask=None,random_seed=None):
-
-    
-    
-#     # 使用传入的随机种子重新设置随机种子
-#     torch.manual_seed(random_seed)
-#     torch.cuda.manual_seed(random_seed)
-#     torch.cuda.manual_seed_all(random_seed)
-    
-#     # 初始化
-#     Z = torch.randn((1, 3, model_config['image_size'], model_config['image_size']), device=device)
-    
-#     loss_fn_alex = lpips.LPIPS(net='alex').to(device)
-#     criterion = torch.nn.MSELoss().to(device)
-#     l1_loss = torch.nn.L1Loss()
-#     losses = []
-
-#     # alpha = torch.randn((1, 3, model_config['image_size'], model_config['image_size']), device=device,requires_grad=True)
-
-
-#     alpha = torch.tensor(0.5, requires_grad=True, device=device)
-#     mu = torch.tensor(0.5, requires_grad=True, device=device)
-#     gamma = torch.tensor(0.1, requires_grad=True, device=device)
-#     # optimizer = torch.optim.Adam([x], lr=0.01)
-#     # optimizer = torch.optim.Adam([Z], lr=0.02)
-
-#     # 初始采样过程
-#     with torch.no_grad():  # 禁用梯度计算
-#         for i, t in enumerate(tqdm(list(range(denoiser_step))[::-1], desc="Denoising Steps")):
-#             time = torch.tensor([t] * ref_img.shape[0], device=device)
-#             if i >= denoiser_step - iter_step:
-#                 print(f"Stopping at the last {iter_step} steps (step {i+1})")
-#                 break
-#             if i == 0:
-#                 sample, pred_start = sampler.p_sample(
-#                     model=model, x=Z, t=time, measurement=y_n, measurement_cond_fn=measurement_cond_fn, mask=mask
-#                 )
-#             else:
-#                 sample, pred_start = sampler.p_sample(
-#                     model=model, x=sample, t=time, measurement=y_n, measurement_cond_fn=measurement_cond_fn, mask=mask
-#                 )
-                
-#             metrics = compute_metrics(
-#                 sample=sample,
-#                 ref_img=ref_img,
-#                 out_path=out_path,
-#                 device=device,
-#                 loss_fn_alex=loss_fn_alex,
-#                 metrics=None  # 初次调用时不传递 metrics，函数会自动初始化
-#             )
-
-#     # 优化过程
-#     sample = sample.detach().clone().requires_grad_(True)
-#     # optimizer = torch.optim.Adam([sample], lr=lr)
-#     b_k_list = [y_n]
-
-#     optimizer = torch.optim.Adam([{'params': sample, 'lr': lr}, {'params': alpha, 'lr': lr},{'params': gamma, 'lr': lr}])    
-
-#     # 定义 ReduceLROnPlateau 调度器
-#     # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-5, verbose=True)
-    
-#     for epoch in tqdm(range(iteration), desc="Training Epochs"):
-#         model.eval()
-#         x_t = sample
-#         x_t.requires_grad_(True)
-#         optimizer.zero_grad()
-
-        
-#         # if epoch == 0:
-#         #     b_t_pre = x_t
-#         # else:
-#         #     b_t_pre = b_t
-            
-#         x_t_pre = x_t
-#         # 更新 x_t
-#         for i, t in enumerate(list(range(iter_step))[::-1]):
-#             time = torch.tensor([t] * ref_img.shape[0], device=device)
-#             x_t, pred_start = sampler.p_sample(
-#                 model=model, x=x_t, t=time, measurement=y_n, measurement_cond_fn=measurement_cond_fn, mask=mask
-#             )
-        
-#         difference = y_n - operator.forward(x_t)
-#         norm = torch.linalg.norm(difference)
-#         norm_grad = torch.autograd.grad(outputs=norm, inputs=x_t)[0]
-            
-#         b_t = x_t - mu*  norm_grad
-        
-
-#         p_t = b_t + gamma*(b_t - x_t)
-        
-#         # p_t = b_t + gamma*(b_t - b_t_pre)
-        
-#         x_k = alpha*x_t + (1-alpha) * p_t
-        
-#         # 计算损失并优化
-#         if mask is not None:
-#         # loss = criterion(operator.forward(x_t), y_n)
-#             loss = l1_loss(operator.forward(x_k, mask=mask), y_n)
-#         else:            
-#             loss = l1_loss(operator.forward(x_k), y_n)
-
-#         # loss.backward()
-#         loss.backward(retain_graph=True)
-
-#         optimizer.step()
-#         losses.append(loss.item())
-
-#         # 计算并记录指标
-#         with torch.no_grad():
-#             metrics = compute_metrics(
-#                 sample=x_k,
-#                 ref_img=ref_img,
-#                 out_path=out_path,
-#                 device=device,
-#                 loss_fn_alex=loss_fn_alex,
-#                 metrics=None  # 初次调用时不传递 metrics，函数会自动初始化
-#             )
-
-#         # # 早停机制
-#         # mean_val = np.mean(output_numpy)
-#         # if epoch > 0:
-#         #     mean_changes.append(mean_val)
-#         #     if len(mean_changes) >= stop_patience:
-#         #         recent_mean_changes = mean_changes[-stop_patience:]
-#         #         if all(abs(recent_mean_changes[i] - recent_mean_changes[i-1]) < early_stopping_threshold for i in range(1, len(recent_mean_changes))):
-#         #             print(f"Early stopping triggered after {epoch + 1} epochs due to mean stability.")
-#         #             break
-#         # else:
-#         #     mean_changes.append(mean_val)
-
-#     # Save results
-#     Z_np = (Z.detach().cpu().numpy().squeeze(0)).clip(0, 1)
-#     plt.imsave(os.path.join(out_path, 'Z_image.png'), Z_np.transpose(1, 2, 0))
-#     plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(x_k))
-
-#     # # Plot losses
-#     # plt.plot(losses, label='Loss')
-#     # plt.legend()
-#     # plt.savefig(os.path.join(out_path, f"loss_{fname.split('.')[0]}.png"))    
-
-#     # # Plot PSNR values
-#     # plt.plot(metrics['psnr'])
-#     # plt.savefig(os.path.join(out_path, 'psnr.png'))
-#     # plt.close()
-    
-#     plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
-#     plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
-    
-#     # 转换最佳图像和参考图像为 numpy 格式
-#     best_img_np = x_t.cpu().squeeze().detach().numpy().transpose(1, 2, 0) 
-#     ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
-
-#     # 计算 PSNR
-#     final_psnr = peak_signal_noise_ratio(ref_img_np, best_img_np)
-#     # 计算 SSIM
-#     final_ssim = structural_similarity(ref_img_np, best_img_np, channel_axis=2, data_range=1)
-#     # 计算 LPIPS
-#     best_img_torch = torch.from_numpy(best_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
-#     ref_img_torch = torch.from_numpy(ref_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
-#     final_lpips = loss_fn_alex(ref_img_torch, best_img_torch).item()
-
-#     # 将结果组织到字典中
-#     final_metric = {
-#         'psnr': final_psnr,
-#         'ssim': final_ssim,
-#         'lpips': final_lpips
-#     }
-    
-    
-#     # 打印最终的 PSNR, SSIM, LPIPS
-#     print(f"Final metrics between best reconstructed image and reference image:")
-#     print(f"PSNR: {final_psnr:.4f}, SSIM: {final_ssim:.4f}, LPIPS: {final_lpips:.4f}")
-    
-#     return x_k , final_metric
-
-
-
-
 def mpgd(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_seed=None, writer=None, img_index=None):
     """
-    采样、计算评价指标并保存结果，增强TensorBoard日志记录
+    MPGD算法实现：使用扩散模型进行线性逆问题求解
     
     Parameters:
-    - sample_fn: 采样函数
-    - ref_img: 参考图像张量
-    - y_n: 噪声后的图像张量
+    - sample_fn: 采样函数，通常是sampler.p_sample_loop的偏函数
+    - ref_img: 参考图像张量 [B, C, H, W]
+    - y_n: 带噪声的测量张量 [B, C, H, W]
     - out_path: 输出保存路径
     - fname: 保存的文件名
     - device: 运行的设备（CPU 或 GPU）
-    - mask: 可选的掩码张量
-    - random_seed: 随机种子
+    - mask: 可选的掩码张量（用于inpainting问题）
+    - random_seed: 随机种子，确保可重复性
     - writer: TensorBoard SummaryWriter对象
     - img_index: 当前处理的图像索引，用于TensorBoard日志
+    
+    Returns:
+    - sample: 重建的图像张量
+    - metrics: 包含PSNR、SSIM和LPIPS的指标字典
     """
+    import os
+    import time
+    import torch
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import lpips
+    from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+    from tqdm import tqdm
     
     # 使用传入的随机种子重新设置随机种子
     if random_seed is not None:
         torch.manual_seed(random_seed)
         torch.cuda.manual_seed(random_seed)
         torch.cuda.manual_seed_all(random_seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     
     # TensorBoard日志：记录实验配置
     if writer is not None and img_index is not None:
         writer.add_text(f'MPGD/Image_{img_index}/Config', 
                        f'Random Seed: {random_seed}\n'
                        f'Mask: {"Yes" if mask is not None else "No"}', 0)
-    
-    # 记录输入图像
-    if writer is not None and img_index is not None:
-        writer.add_image(f'MPGD/Input/Image_{img_index}', (y_n[0] + 1)/2, 0)
-        writer.add_image(f'MPGD/Reference/Image_{img_index}', (ref_img[0] + 1)/2, 0)
+        
+        # 记录参考图像和测量图像
+        writer.add_image(f'MPGD/Input/Image_{img_index}', (y_n[0].clamp(-1, 1) + 1)/2, 0)
+        writer.add_image(f'MPGD/Reference/Image_{img_index}', (ref_img[0].clamp(-1, 1) + 1)/2, 0)
     
     # 开始采样
     start_time = time.time()
-    x_start = torch.randn(ref_img.shape, device=device).requires_grad_()
     
-    # 使用进度条
-    pbar = tqdm(total=1, desc=f"MPGD Sampling {'with mask' if mask is not None else ''}")
+    # 使用随机噪声初始化
+    x_start = torch.randn_like(ref_img, device=device)
     
-    # 使用 partial 确保 sample_fn 接收所有必要参数
+    # 使用进度条包装采样过程
+    pbar = tqdm(total=1, desc=f"MPGD Sampling for image {img_index if img_index is not None else 'N/A'}")
+    
+    # 调用采样函数
     sample = sample_fn(
         x_start=x_start, 
         measurement=y_n, 
         record=True, 
         save_root=out_path, 
-        mask=mask, 
-        ref_img=ref_img,
-        writer=writer, 
-        img_index=img_index,
-        pbar=pbar  # 添加进度条
+        mask=mask
     )
     
     # 更新进度条
@@ -1565,58 +1834,99 @@ def mpgd(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_see
     # 计算采样时间
     sampling_time = time.time() - start_time
     
-    # 初始化评价指标
+    # 确保输出目录存在
+    os.makedirs(os.path.join(out_path, 'recon'), exist_ok=True)
+    os.makedirs(os.path.join(out_path, 'input'), exist_ok=True)
+    os.makedirs(os.path.join(out_path, 'label'), exist_ok=True)
+
+    # 初始化评价指标计算
     loss_fn_alex = lpips.LPIPS(net='alex').to(device)
 
     # 保存结果图像
-    plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample)) 
-    plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
-    plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
+    try:
+        # 使用安全的图像保存函数
+        save_image(sample, os.path.join(out_path, 'recon', fname))
+        save_image(y_n, os.path.join(out_path, 'input', fname))
+        save_image(ref_img, os.path.join(out_path, 'label', fname))
+    except Exception as e:
+        print(f"保存图像失败: {e}")
+        try:
+            # 备选方案
+            plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample)) 
+            plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
+            plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
+        except Exception as e:
+            print(f"备选保存方案也失败: {e}")
     
-    # 转换最佳图像和参考图像为 numpy 格式
-    best_img_np = sample.cpu().squeeze().detach().numpy().transpose(1, 2, 0) 
-    ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
-
     # 计算评价指标
-    final_psnr = peak_signal_noise_ratio(ref_img_np, best_img_np)
-    final_ssim = structural_similarity(ref_img_np, best_img_np, channel_axis=2, data_range=1)
-    
-    best_img_torch = torch.from_numpy(best_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
-    ref_img_torch = torch.from_numpy(ref_img_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
-    final_lpips = loss_fn_alex(ref_img_torch, best_img_torch).item()
+    try:
+        # 转换最佳图像和参考图像为 numpy 格式
+        sample_np = sample.detach().cpu().squeeze().numpy()
+        ref_np = ref_img.cpu().squeeze().numpy()
+        
+        # 确保格式正确 [H, W, C]
+        if sample_np.shape[0] == 3:  # [C, H, W]
+            sample_np = np.transpose(sample_np, (1, 2, 0))
+        if ref_np.shape[0] == 3:  # [C, H, W]
+            ref_np = np.transpose(ref_np, (1, 2, 0))
+            
+        # 计算 PSNR
+        psnr_val = peak_signal_noise_ratio(ref_np, sample_np)
+        
+        # 计算 SSIM
+        ssim_val = structural_similarity(ref_np, sample_np, channel_axis=2, data_range=1)
+        
+        # 计算 LPIPS
+        # 准备用于LPIPS计算的张量
+        sample_tensor = torch.from_numpy(sample_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
+        ref_tensor = torch.from_numpy(ref_np).permute(2, 0, 1).unsqueeze(0).float().to(device)
+        
+        # 确保值范围在[-1, 1]
+        if sample_tensor.min() >= 0 and sample_tensor.max() <= 1:
+            sample_tensor = sample_tensor * 2 - 1
+        if ref_tensor.min() >= 0 and ref_tensor.max() <= 1:
+            ref_tensor = ref_tensor * 2 - 1
+            
+        lpips_val = loss_fn_alex(sample_tensor, ref_tensor).item()
+    except Exception as e:
+        print(f"计算指标时出错: {e}")
+        psnr_val = 0
+        ssim_val = 0
+        lpips_val = 0
 
     # 记录最终指标
-    final_metric = {
-        'psnr': final_psnr,
-        'ssim': final_ssim,
-        'lpips': final_lpips
+    metrics = {
+        'psnr': psnr_val,
+        'ssim': ssim_val,
+        'lpips': lpips_val
     }
     
     # 将最终指标记录到TensorBoard
     if writer is not None and img_index is not None:
-        # 性能指标
+        # 记录性能指标
         writer.add_scalar(f'MPGD/Performance/SamplingTime', sampling_time, img_index)
-        writer.add_scalar(f'MPGD/Metrics/PSNR', final_psnr, img_index)
-        writer.add_scalar(f'MPGD/Metrics/SSIM', final_ssim, img_index)
-        writer.add_scalar(f'MPGD/Metrics/LPIPS', final_lpips, img_index)
+        writer.add_scalar(f'MPGD/Metrics/PSNR', psnr_val, img_index)
+        writer.add_scalar(f'MPGD/Metrics/SSIM', ssim_val, img_index)
+        writer.add_scalar(f'MPGD/Metrics/LPIPS', lpips_val, img_index)
         
-        # 图像可视化
-        writer.add_image(f'MPGD/Reconstructed/Image_{img_index}', best_img_torch[0], img_index)
+        # 记录重建图像
+        writer.add_image(f'MPGD/Reconstructed/Image_{img_index}', (sample[0].clamp(-1, 1) + 1)/2, img_index)
         
-        # 误差图像
-        error_map = torch.abs(ref_img - sample)
-        error_map = error_map / error_map.max()  # 归一化误差
-        writer.add_image(f'MPGD/ErrorMap/Image_{img_index}', error_map[0], img_index)
+        # 记录误差图像
+        try:
+            error_map = torch.abs(ref_img - sample)
+            error_map = error_map / error_map.max()  # 归一化误差
+            writer.add_image(f'MPGD/ErrorMap/Image_{img_index}', error_map[0], img_index)
+        except Exception as e:
+            print(f"记录误差图像失败: {e}")
     
     # 打印最终的性能指标
     print(f"MPGD Performance for Image {img_index if img_index is not None else 'N/A'}:")
     print(f"Sampling Time: {sampling_time:.4f} seconds")
-    print(f"Metrics:")
-    print(f"  PSNR: {final_psnr:.4f}")
-    print(f"  SSIM: {final_ssim:.4f}")
-    print(f"  LPIPS: {final_lpips:.4f}")
+    print(f"Metrics - PSNR: {psnr_val:.4f}, SSIM: {ssim_val:.4f}, LPIPS: {lpips_val:.4f}")
     
-    return sample, final_metric
+    return sample, metrics
+
 
 
 
