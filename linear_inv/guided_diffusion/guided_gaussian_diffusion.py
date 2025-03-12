@@ -5,11 +5,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from tqdm.auto import tqdm
-
+import lpips
 from util.img_utils import clear_color
 from .posterior_mean_variance import get_mean_processor, get_var_processor
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
-
+from .gaussian_diffusion import extract_and_expand
 
 __SAMPLER__ = {}
 
@@ -479,18 +479,19 @@ class DDIMx0(SpacedDiffusion):
     
     @torch.no_grad()
     def p_sample_loop(self,
-                 model,
-                 x_start,
-                 measurement,
-                 measurement_cond_fn,
-                 record,
-                 save_root,
-                 mask=None,
-                 ref_img=None,
-                 writer=None,
-                 img_index=None):
+                    model,
+                    x_start,
+                    measurement,
+                    measurement_cond_fn,
+                    record,
+                    save_root,
+                    mask=None,
+                    ref_img=None,
+                    writer=None,
+                    img_index=None,
+                    pbar=None):
         """
-        The function used for sampling from noise.
+        增强版采样循环，记录中间过程的损失和重建图像
         
         Parameters:
         - model: 扩散模型
@@ -502,7 +503,7 @@ class DDIMx0(SpacedDiffusion):
         - mask: 可选掩码
         - ref_img: 参考图像，用于计算指标
         - writer: TensorBoard SummaryWriter对象
-        - img_index: 当前处理的图像索引, 用于TensorBoard日志
+        - img_index: 当前处理的图像索引
         """
         
         eta = self.eta
@@ -516,13 +517,43 @@ class DDIMx0(SpacedDiffusion):
         else:
             img_index = int(img_index)
         
+        # 用于存储中间过程的损失和图像
+        intermediate_losses = []
+        intermediate_psnrs = []
+        intermediate_ssims = []
+        intermediate_lpips = []
         
-        pbar = tqdm(list(range(self.num_timesteps))[::-1])
+        # 如果使用TensorBoard，记录初始配置
+        if writer is not None:
+            writer.add_text(f'DDIMx0/Image_{img_index}/Config', 
+                        f'Eta: {eta}\n'
+                        f'Mask: {"Yes" if mask is not None else "No"}', 0)
+            
+            # 记录初始噪声图像
+            writer.add_image(f'DDIMx0/Initial_Noise/Image_{img_index}', 
+                            (img[0] + 1) / 2, 0)
+            
+            # 记录输入测量图像
+            writer.add_image(f'DDIMx0/Measurement/Image_{img_index}', 
+                            (measurement[0] + 1) / 2, 0)
+            
+            if ref_img is not None:
+                writer.add_image(f'DDIMx0/Reference/Image_{img_index}', 
+                                (ref_img[0] + 1) / 2, 0)
+        
+        # 损失函数和指标计算
+        loss_fn_alex = lpips.LPIPS(net='alex').to(device)
+        
+        # 进度条
+        pbar = tqdm(list(range(self.num_timesteps))[::-1], 
+                    desc=f'DDIM Sampling (Image {img_index})')
+        
         for step_idx, idx in enumerate(pbar):
             time = torch.tensor([idx] * img.shape[0], device=device)
             t = time
             x = img
             
+            # 标准扩散采样步骤
             out = self.p_mean_variance(model, x, t)
             
             eps = self.predict_eps_from_x_start(x, t, out['pred_xstart'])
@@ -534,6 +565,7 @@ class DDIMx0(SpacedDiffusion):
                 * torch.sqrt(1 - alpha_bar / alpha_bar_prev)
             )
             
+            # 应用条件约束
             x_0_hat = out['pred_xstart'].detach()
             with torch.enable_grad():
                 x_0_hat = x_0_hat.requires_grad_()
@@ -544,7 +576,54 @@ class DDIMx0(SpacedDiffusion):
             
             out["pred_xstart"] = x0_t
             
-            # Equation 12.
+            # 计算损失和指标
+            if ref_img is not None:
+                try:
+                    current_img = out['pred_xstart']
+                    
+                    # 确保维度正确
+                    if current_img.dim() == 4:
+                        current_img = current_img[0]
+                    
+                    # 计算重建误差
+                    current_img_np = current_img.cpu().squeeze().numpy().transpose(1, 2, 0)
+                    ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
+                    
+                    rec_psnr = peak_signal_noise_ratio(ref_img_np, current_img_np)
+                    
+                    rec_ssim = structural_similarity(
+                        ref_img_np, 
+                        current_img_np, 
+                        channel_axis=2, 
+                        data_range=1
+                    )
+                    
+                    # 图像处理
+                    current_img_torch = current_img.permute(1, 2, 0).unsqueeze(0).float().to(device)
+                    ref_img_torch = ref_img.permute(1, 2, 0).unsqueeze(0).float().to(device)
+                    rec_lpips = loss_fn_alex(current_img_torch, ref_img_torch).item()
+                    
+                    intermediate_psnrs.append(rec_psnr)
+                    intermediate_ssims.append(rec_ssim)
+                    intermediate_lpips.append(rec_lpips)
+                
+                except Exception as e:
+                    print(f"Error in metric computation: {e}")
+                    print(f"current_img shape: {current_img.shape if 'current_img' in locals() else 'N/A'}")
+                    print(f"ref_img shape: {ref_img.shape if ref_img is not None else 'N/A'}")            
+            # 记录损失和步骤信息到TensorBoard
+            if writer is not None:
+                writer.add_scalar(f'DDIMx0/Distance/Image_{img_index}', 
+                    distance.item(), step_idx)    
+                
+                # 记录中间重建图像（每隔一定步骤）
+                if step_idx % 5 == 0:
+                    writer.add_image(
+                        f'DDIMx0/Intermediate/Image_{img_index}/Step_{step_idx}', 
+                        (out['pred_xstart'][0] + 1) / 2, step_idx
+                    )
+            
+            # 标准DDIM采样步骤
             noise = torch.randn_like(x)
             mean_pred = (
                 out["pred_xstart"] * torch.sqrt(alpha_bar_prev)
@@ -554,34 +633,45 @@ class DDIMx0(SpacedDiffusion):
             img = mean_pred
             if t != 0:
                 img += sigma * noise
+            
             img = img.detach_()
+        
+        # 最终重建图像处理和记录
+        if writer is not None:
+            # 记录最终重建图像
+            writer.add_image(f'DDIMx0/Final_Reconstruction/Image_{img_index}', 
+                            (img[0] + 1) / 2, 0)
             
-            # if mask is not None:
-            #     ori_in = measurement
-            #     img_orig = alpha_bar_prev.sqrt() * ori_in + torch.sqrt(1 - alpha_bar_prev - sigma ** 2) * eps
-            #     img = img_orig * mask + (1. - mask) * img
-            
-            pbar.set_postfix({'distance': distance.item()}, refresh=False)
-            
-            if ref_img is not None and writer is not None:  # 确保ref_img和writer都被传入
-                # 计算当前全局步骤 = 图像基准步骤 + 当前步骤
-                img_np = img.cpu().squeeze().detach().numpy().transpose(1, 2, 0)
-                ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
+            # 如果有参考图像，绘制指标曲线
+            if ref_img is not None:
+                plt.figure(figsize=(15, 5))
                 
-                # 计算 PSNR
-                current_psnr = peak_signal_noise_ratio(ref_img_np, img_np)
+                plt.subplot(131)
+                plt.plot(intermediate_psnrs)
+                plt.title('PSNR during Sampling')
+                plt.xlabel('Steps')
+                plt.ylabel('PSNR')
                 
-                # 计算 Loss (MSE loss)
-                loss = torch.nn.functional.mse_loss(img, ref_img)
+                plt.subplot(132)
+                plt.plot(intermediate_ssims)
+                plt.title('SSIM during Sampling')
+                plt.xlabel('Steps')
+                plt.ylabel('SSIM')
                 
-                # 记录到 TensorBoard，使用步骤索引
-                writer.add_scalar(f'PSNR/denoising/image_{img_index}', current_psnr, step_idx)
-                writer.add_scalar(f'Loss/denoising/image_{img_index}', loss.item(), step_idx)
-                writer.add_scalar(f'Distance/denoising/image_{img_index}', distance.item(), step_idx)
-            
-            if record and idx % 10 == 0:
-                file_path = os.path.join(save_root, f"progress/x_{str(idx).zfill(4)}.png")
-                plt.imsave(file_path, clear_color(img))
+                plt.subplot(133)
+                plt.plot(intermediate_lpips)
+                plt.title('LPIPS during Sampling')
+                plt.xlabel('Steps')
+                plt.ylabel('LPIPS')
+                
+                plt.tight_layout()
+                plt.savefig(os.path.join(save_root, f'ddimx0_metrics_image_{img_index}.png'))
+                plt.close()
+                
+                # 将曲线图添加到TensorBoard
+                curve_img = plt.imread(os.path.join(save_root, f'ddimx0_metrics_image_{img_index}.png'))
+                writer.add_image(f'DDIMx0/Metrics_Curves/Image_{img_index}', 
+                                torch.from_numpy(curve_img).permute(2, 0, 1), 0)
         
         return img
     
