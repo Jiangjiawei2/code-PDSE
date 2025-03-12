@@ -505,6 +505,14 @@ class DDIMx0(SpacedDiffusion):
         - writer: TensorBoard SummaryWriter对象
         - img_index: 当前处理的图像索引
         """
+        # 导入所需的库
+        import torch
+        import numpy as np
+        import os
+        import matplotlib.pyplot as plt
+        import lpips
+        from tqdm import tqdm
+        from skimage.metrics import peak_signal_noise_ratio, structural_similarity
         
         eta = self.eta
         img = x_start
@@ -541,12 +549,22 @@ class DDIMx0(SpacedDiffusion):
                 writer.add_image(f'DDIMx0/Reference/Image_{img_index}', 
                                 (ref_img[0] + 1) / 2, 0)
         
-        # 损失函数和指标计算
-        loss_fn_alex = lpips.LPIPS(net='alex').to(device)
+        # 初始化LPIPS模型
+        loss_fn_alex = None
+        if ref_img is not None:
+            try:
+                loss_fn_alex = lpips.LPIPS(net='alex').to(device)
+            except Exception as e:
+                print(f"LPIPS模型初始化失败: {e}")
+                loss_fn_alex = None
         
         # 进度条
-        pbar = tqdm(list(range(self.num_timesteps))[::-1], 
-                    desc=f'DDIM Sampling (Image {img_index})')
+        if pbar is None:
+            pbar = tqdm(list(range(self.num_timesteps))[::-1], 
+                        desc=f'DDIM Sampling (Image {img_index})')
+        else:
+            # 如果传入了进度条，使用传入的
+            pass
         
         for step_idx, idx in enumerate(pbar):
             time = torch.tensor([idx] * img.shape[0], device=device)
@@ -576,45 +594,118 @@ class DDIMx0(SpacedDiffusion):
             
             out["pred_xstart"] = x0_t
             
+            # 记录损失
+            intermediate_losses.append(distance.item())
+            
             # 计算损失和指标
-            if ref_img is not None:
+            if ref_img is not None and loss_fn_alex is not None:
                 try:
+                    # 获取当前预测的x0
                     current_img = out['pred_xstart']
                     
-                    # 确保维度正确
+                    # 确保维度正确并转换为numpy数组
                     if current_img.dim() == 4:
-                        current_img = current_img[0]
+                        current_img_np = current_img.cpu().squeeze().detach().numpy()
+                    else:
+                        current_img_np = current_img.cpu().detach().numpy()
                     
-                    # 计算重建误差
-                    current_img_np = current_img.cpu().squeeze().numpy().transpose(1, 2, 0)
-                    ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
+                    if current_img_np.shape[0] == 3:  # [C, H, W]
+                        current_img_np = np.transpose(current_img_np, (1, 2, 0))
                     
-                    rec_psnr = peak_signal_noise_ratio(ref_img_np, current_img_np)
+                    if ref_img.dim() == 4:
+                        ref_img_np = ref_img.cpu().squeeze().numpy()
+                    else:
+                        ref_img_np = ref_img.cpu().numpy()
                     
-                    rec_ssim = structural_similarity(
-                        ref_img_np, 
-                        current_img_np, 
-                        channel_axis=2, 
-                        data_range=1
-                    )
+                    if ref_img_np.shape[0] == 3:  # [C, H, W]
+                        ref_img_np = np.transpose(ref_img_np, (1, 2, 0))
                     
-                    # 图像处理
-                    current_img_torch = current_img.permute(1, 2, 0).unsqueeze(0).float().to(device)
-                    ref_img_torch = ref_img.permute(1, 2, 0).unsqueeze(0).float().to(device)
-                    rec_lpips = loss_fn_alex(current_img_torch, ref_img_torch).item()
+                    # 计算PSNR
+                    try:
+                        rec_psnr = peak_signal_noise_ratio(ref_img_np, current_img_np)
+                        intermediate_psnrs.append(rec_psnr)
+                    except Exception as e:
+                        print(f"PSNR计算错误: {e}")
+                        rec_psnr = 0
+                        intermediate_psnrs.append(rec_psnr)
                     
-                    intermediate_psnrs.append(rec_psnr)
-                    intermediate_ssims.append(rec_ssim)
-                    intermediate_lpips.append(rec_lpips)
+                    # 计算SSIM
+                    try:
+                        rec_ssim = structural_similarity(
+                            ref_img_np, 
+                            current_img_np, 
+                            channel_axis=2, 
+                            data_range=1
+                        )
+                        intermediate_ssims.append(rec_ssim)
+                    except Exception as e:
+                        print(f"SSIM计算错误: {e}")
+                        try:
+                            # 尝试使用multichannel参数（旧版skimage）
+                            rec_ssim = structural_similarity(
+                                ref_img_np, 
+                                current_img_np, 
+                                multichannel=True, 
+                                data_range=1
+                            )
+                            intermediate_ssims.append(rec_ssim)
+                        except Exception as e2:
+                            print(f"备选SSIM计算也失败: {e2}")
+                            rec_ssim = 0
+                            intermediate_ssims.append(rec_ssim)
+                    
+                    # 计算LPIPS
+                    try:
+                        # 准备用于LPIPS的张量
+                        if current_img.dim() == 3:  # [C, H, W]
+                            current_img_torch = current_img.unsqueeze(0).to(device)
+                        else:  # [B, C, H, W]
+                            current_img_torch = current_img.to(device)
+                        
+                        if ref_img.dim() == 3:  # [C, H, W]
+                            ref_img_torch = ref_img.unsqueeze(0).to(device)
+                        else:  # [B, C, H, W]
+                            ref_img_torch = ref_img.to(device)
+                        
+                        rec_lpips = loss_fn_alex(current_img_torch, ref_img_torch).item()
+                        intermediate_lpips.append(rec_lpips)
+                    except Exception as e:
+                        print(f"LPIPS计算错误: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        rec_lpips = 0
+                        intermediate_lpips.append(rec_lpips)
+                    
+                    # 更新进度条显示
+                    if pbar is not None:
+                        pbar.set_postfix({
+                            'PSNR': f"{rec_psnr:.2f}", 
+                            'SSIM': f"{rec_ssim:.4f}", 
+                            'LPIPS': f"{rec_lpips:.4f}"
+                        })
                 
                 except Exception as e:
-                    print(f"Error in metric computation: {e}")
-                    print(f"current_img shape: {current_img.shape if 'current_img' in locals() else 'N/A'}")
-                    print(f"ref_img shape: {ref_img.shape if ref_img is not None else 'N/A'}")            
+                    print(f"指标计算过程中出错: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
             # 记录损失和步骤信息到TensorBoard
             if writer is not None:
                 writer.add_scalar(f'DDIMx0/Distance/Image_{img_index}', 
-                    distance.item(), step_idx)    
+                    distance.item(), step_idx)
+                
+                # 如果有计算指标，也记录指标
+                if len(intermediate_psnrs) > 0 and step_idx < len(intermediate_psnrs):
+                    writer.add_scalar(f'DDIMx0/Metrics/PSNR/Image_{img_index}', 
+                                    intermediate_psnrs[-1], step_idx)
+                
+                if len(intermediate_ssims) > 0 and step_idx < len(intermediate_ssims):
+                    writer.add_scalar(f'DDIMx0/Metrics/SSIM/Image_{img_index}', 
+                                    intermediate_ssims[-1], step_idx)
+                
+                if len(intermediate_lpips) > 0 and step_idx < len(intermediate_lpips):
+                    writer.add_scalar(f'DDIMx0/Metrics/LPIPS/Image_{img_index}', 
+                                    intermediate_lpips[-1], step_idx)
                 
                 # 记录中间重建图像（每隔一定步骤）
                 if step_idx % 5 == 0:
@@ -642,36 +733,13 @@ class DDIMx0(SpacedDiffusion):
             writer.add_image(f'DDIMx0/Final_Reconstruction/Image_{img_index}', 
                             (img[0] + 1) / 2, 0)
             
-            # 如果有参考图像，绘制指标曲线
-            if ref_img is not None:
-                plt.figure(figsize=(15, 5))
-                
-                plt.subplot(131)
-                plt.plot(intermediate_psnrs)
-                plt.title('PSNR during Sampling')
-                plt.xlabel('Steps')
-                plt.ylabel('PSNR')
-                
-                plt.subplot(132)
-                plt.plot(intermediate_ssims)
-                plt.title('SSIM during Sampling')
-                plt.xlabel('Steps')
-                plt.ylabel('SSIM')
-                
-                plt.subplot(133)
-                plt.plot(intermediate_lpips)
-                plt.title('LPIPS during Sampling')
-                plt.xlabel('Steps')
-                plt.ylabel('LPIPS')
-                
-                plt.tight_layout()
-                plt.savefig(os.path.join(save_root, f'ddimx0_metrics_image_{img_index}.png'))
-                plt.close()
-                
-                # 将曲线图添加到TensorBoard
-                curve_img = plt.imread(os.path.join(save_root, f'ddimx0_metrics_image_{img_index}.png'))
-                writer.add_image(f'DDIMx0/Metrics_Curves/Image_{img_index}', 
-                                torch.from_numpy(curve_img).permute(2, 0, 1), 0)
+            # 记录最终指标
+            if intermediate_psnrs:
+                writer.add_scalar(f'DDIMx0/Final/PSNR/Image_{img_index}', intermediate_psnrs[-1], 0)
+            if intermediate_ssims:
+                writer.add_scalar(f'DDIMx0/Final/SSIM/Image_{img_index}', intermediate_ssims[-1], 0)
+            if intermediate_lpips:
+                writer.add_scalar(f'DDIMx0/Final/LPIPS/Image_{img_index}', intermediate_lpips[-1], 0)
         
         return img
     

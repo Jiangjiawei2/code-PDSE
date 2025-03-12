@@ -433,33 +433,6 @@ def DMPlug(
 ):
     """
     DMPlug算法：使用扩散模型作为先验，通过迭代优化重建图像。
-    
-    Parameters:
-    - model: 扩散模型
-    - sampler: 扩散采样器
-    - measurement_cond_fn: 测量条件函数
-    - ref_img: 参考图像张量
-    - y_n: 带噪声的测量张量
-    - args: 命令行参数
-    - operator: 测量算子
-    - device: 设备
-    - model_config: 模型配置
-    - measure_config: 测量配置
-    - fname: 输出文件名
-    - early_stopping_threshold: 早停阈值
-    - stop_patience: 早停耐心值
-    - out_path: 输出路径
-    - iteration: 迭代次数
-    - lr: 学习率
-    - denoiser_step: 去噪步数
-    - mask: 掩码（可选）
-    - random_seed: 随机种子
-    - writer: TensorBoard SummaryWriter对象
-    - img_index: 图像索引
-    
-    Returns:
-    - sample: 重建的图像
-    - metrics: 包含PSNR、SSIM和LPIPS的指标字典
     """
     # 设置随机种子
     if random_seed is not None:
@@ -476,7 +449,7 @@ def DMPlug(
                        f'Early Stopping: threshold={early_stopping_threshold}, patience={stop_patience}\n'
                        f'Random Seed: {random_seed}', 0)
         
-        # 记录参考图像和测量图像
+        # 记录参考图像和测量图像不需要修改，因为这些是算法的输入
         writer.add_image(f'DMPlug/Image_{img_index}/Reference', (ref_img[0] + 1)/2, 0)
         writer.add_image(f'DMPlug/Image_{img_index}/Measurement', (y_n[0] + 1)/2, 0)
     
@@ -569,15 +542,13 @@ def DMPlug(
                 writer.add_scalar(f'DMPlug/Image_{img_index}/Metrics/SSIM', current_ssim, epoch)
                 writer.add_scalar(f'DMPlug/Image_{img_index}/Metrics/LPIPS', current_lpips, epoch)
                 
-                # 每隔一定轮数记录图像
+                # 每隔一定轮数记录中间过程图像
                 if epoch % 100 == 0 or epoch == iteration - 1:
-                    writer.add_image(f'DMPlug/Image_{img_index}/Reconstruction/Epoch_{epoch}', 
+                    writer.add_image(f'DMPlug/Image_{img_index}/Intermediate/Epoch_{epoch}', 
                                    (sample[0] + 1)/2, epoch)
                 
-                # 记录最佳PSNR图像
+                # 只记录最佳PSNR的中间结果，不记录最终的重建图像（留给主函数记录）
                 if current_psnr == best_psnr:
-                    writer.add_image(f'DMPlug/Image_{img_index}/Best/Reconstruction', 
-                                   (best_img[0] + 1)/2, epoch)
                     writer.add_scalar(f'DMPlug/Image_{img_index}/Best/PSNR', best_psnr, epoch)
         
         # 早停检查
@@ -595,7 +566,7 @@ def DMPlug(
     if best_img is None:
         best_img = sample
     
-    # 保存结果和可视化
+    # 记录训练曲线，这部分保留，因为它记录的是算法内部的过程数据
     if writer is not None and img_index is not None:
         # 绘制损失曲线
         fig, axs = plt.subplots(2, 2, figsize=(15, 10))
@@ -632,13 +603,10 @@ def DMPlug(
         plt.close()
         
         curves_img = plt.imread(curves_path)
-        writer.add_image(f'DMPlug/Image_{img_index}/Curves', 
+        writer.add_image(f'DMPlug/Image_{img_index}/Learning_Curves', 
                        torch.from_numpy(curves_img).permute(2, 0, 1), 0)
         
-        # 记录误差图
-        error_map = torch.abs(ref_img - best_img)
-        error_map = error_map / error_map.max()  # 归一化误差
-        writer.add_image(f'DMPlug/Image_{img_index}/Error_Map', error_map[0], 0)
+        # 删除记录误差图的部分
         
         # 记录最终状态
         writer.add_text(f'DMPlug/Image_{img_index}/Results', 
@@ -994,6 +962,7 @@ def RED_diff(
 
 
 
+## 修改acce_RED_diff函数，移除重复的记录
 def acce_RED_diff(   
     model, sampler, measurement_cond_fn, ref_img, y_n, device, model_config,
     measure_config, operator, fname, iter_step=3, iteration=1000, denoiser_step=10, 
@@ -1002,32 +971,6 @@ def acce_RED_diff(
 ):
     """
     acce_RED_diff算法: 加速版的RED (Regularization by Denoising) 使用扩散模型
-    
-    参数:
-        model: 扩散模型
-        sampler: 扩散采样器
-        measurement_cond_fn: 测量条件函数
-        ref_img: 参考图像
-        y_n: 噪声测量值
-        device: 计算设备
-        model_config: 模型配置
-        measure_config: 测量配置
-        operator: 测量算子
-        fname: 输出文件名
-        iter_step: 迭代步数
-        iteration: 总迭代次数
-        denoiser_step: 去噪步数
-        stop_patience: 早停耐心值
-        early_stopping_threshold: 早停阈值
-        lr: 学习率
-        out_path: 输出路径
-        mask: 掩码
-        random_seed: 随机种子
-        writer: TensorBoard SummaryWriter
-        img_index: 图像索引
-        
-    返回:
-        tuple: (重建图像, 指标字典)
     """
     # 使用传入的随机种子重新设置随机种子
     if random_seed is not None:
@@ -1046,7 +989,7 @@ def acce_RED_diff(
                        f'Early Stopping: threshold={early_stopping_threshold}, patience={stop_patience}\n'
                        f'Random Seed: {random_seed}', 0)
         
-        # 记录参考图像和测量图像
+        # 记录参考图像和测量图像不需要修改，因为这些是算法的输入
         if ref_img.dim() == 4:  # [B, C, H, W]
             ref_to_log = (ref_img[0] + 1) / 2  # 规范化到[0,1]
         else:  # [C, H, W]
@@ -1249,9 +1192,9 @@ def acce_RED_diff(
                     writer.add_scalar(f'acce_RED_diff/Image_{img_index}/LPIPS', current_lpips, epoch)
                     writer.add_scalar(f'acce_RED_diff/Image_{img_index}/Alpha', alpha.item(), epoch)
                     
-                    # 每隔10轮记录一次图像
+                    # 每隔10轮记录一次中间过程图像，保留这部分记录
                     if epoch % 10 == 0:
-                        writer.add_image(f'acce_RED_diff/Image_{img_index}/Reconstruction/Epoch_{epoch}', 
+                        writer.add_image(f'acce_RED_diff/Image_{img_index}/Intermediate/Epoch_{epoch}', 
                                        (x_k[0] if x_k.dim() == 4 else x_k + 1) / 2, epoch)
                 
                 # 检查早停
@@ -1271,10 +1214,8 @@ def acce_RED_diff(
                     }
                     best_epoch = epoch
                     
-                    # 记录最佳样本到TensorBoard
+                    # 记录最佳样本对应的指标，但不记录最终重建图像
                     if writer is not None and img_index is not None:
-                        writer.add_image(f'acce_RED_diff/Image_{img_index}/Best/Reconstruction', 
-                                       (best_sample[0] if best_sample.dim() == 4 else best_sample + 1) / 2, best_epoch)
                         writer.add_text(f'acce_RED_diff/Image_{img_index}/Best/Info', 
                                        f'Epoch: {best_epoch}\n'
                                        f'Loss: {best_loss:.6f}\n'
@@ -1342,18 +1283,18 @@ def acce_RED_diff(
             # 添加到TensorBoard
             if writer is not None and img_index is not None and os.path.exists(curves_path):
                 img = torchvision.transforms.ToTensor()(plt.imread(curves_path))
-                writer.add_image(f'acce_RED_diff/Image_{img_index}/Curves', img, 0)
+                writer.add_image(f'acce_RED_diff/Image_{img_index}/Learning_Curves', img, 0)
     except Exception as e:
         print(f"保存结果曲线时出错: {e}")
     
-    # 保存重建图像
+    # 保存重建图像到文件系统
     try:
         import os
         os.makedirs(os.path.join(out_path, 'recon'), exist_ok=True)
         os.makedirs(os.path.join(out_path, 'input'), exist_ok=True)
         os.makedirs(os.path.join(out_path, 'label'), exist_ok=True)
         
-        # 使用修复的图像保存函数
+        # 使用安全的图像保存函数
         def save_tensor_image(tensor, path):
             """保存张量图像到文件"""
             import matplotlib.pyplot as plt
@@ -1384,31 +1325,15 @@ def acce_RED_diff(
         save_tensor_image(y_n, os.path.join(out_path, 'input', fname))
         save_tensor_image(ref_img, os.path.join(out_path, 'label', fname))
         
-        # 记录最终图像到TensorBoard
-        if writer is not None and img_index is not None:
-            writer.add_image(f'acce_RED_diff/Image_{img_index}/Final/Reconstruction', 
-                           (best_sample[0] if best_sample.dim() == 4 else best_sample + 1) / 2, 0)
-            
-            # 记录误差图
-            try:
-                # 确保维度一致
-                if ref_img.dim() == 4 and best_sample.dim() == 3:
-                    best_sample_compare = best_sample.unsqueeze(0)
-                elif ref_img.dim() == 3 and best_sample.dim() == 4:
-                    ref_img_compare = ref_img.unsqueeze(0)
-                else:
-                    best_sample_compare = best_sample
-                    ref_img_compare = ref_img
-                
-                error_map = torch.abs(ref_img_compare - best_sample_compare)
-                # 归一化误差图
-                error_map = error_map / (error_map.max() + 1e-8)
-                writer.add_image(f'acce_RED_diff/Image_{img_index}/Error_Map', 
-                               error_map[0] if error_map.dim() == 4 else error_map, 0)
-            except Exception as e:
-                print(f"创建误差图时出错: {e}")
     except Exception as e:
         print(f"保存图像时出错: {e}")
+        # 备选方案
+        try:
+            plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(best_sample))
+            plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
+            plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
+        except Exception as e2:
+            print(f"备选保存方案也失败: {e2}")
     
     # 返回最佳样本和指标
     return best_sample, best_metrics
@@ -1762,6 +1687,7 @@ def acce_RED_earlystop(   ##  best performence
     return x_k , final_metric
 
 
+# 修改mpgd函数，移除冗余的重建图像和误差图像记录
 def mpgd(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_seed=None, writer=None, img_index=None):
     """
     MPGD算法实现：使用扩散模型进行线性逆问题求解
@@ -1819,13 +1745,27 @@ def mpgd(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_see
     pbar = tqdm(total=1, desc=f"MPGD Sampling for image {img_index if img_index is not None else 'N/A'}")
     
     # 调用采样函数
-    sample = sample_fn(
-        x_start=x_start, 
-        measurement=y_n, 
-        record=True, 
-        save_root=out_path, 
-        mask=mask
-    )
+    try:
+        sample = sample_fn(
+            x_start=x_start, 
+            measurement=y_n, 
+            record=True, 
+            save_root=out_path, 
+            mask=mask,
+            ref_img=ref_img,  # 添加参考图像
+            writer=writer,    # 添加writer
+            img_index=img_index  # 添加图像索引
+        )
+    except Exception as e:
+        print(f"采样函数执行错误: {e}")
+        # 如果采样函数不支持这些参数，退回到基本版本
+        sample = sample_fn(
+            x_start=x_start, 
+            measurement=y_n, 
+            record=True, 
+            save_root=out_path, 
+            mask=mask
+        )
     
     # 更新进度条
     pbar.update(1)
@@ -1841,24 +1781,55 @@ def mpgd(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_see
 
     # 初始化评价指标计算
     loss_fn_alex = lpips.LPIPS(net='alex').to(device)
-
+    
     # 保存结果图像
     try:
         # 使用安全的图像保存函数
-        save_image(sample, os.path.join(out_path, 'recon', fname))
-        save_image(y_n, os.path.join(out_path, 'input', fname))
-        save_image(ref_img, os.path.join(out_path, 'label', fname))
+        def save_tensor_image(tensor, path):
+            """保存张量图像到文件"""
+            import matplotlib.pyplot as plt
+            import numpy as np
+            
+            # 确保是CPU张量并分离梯度
+            img = tensor.detach().cpu()
+            
+            # 转换为numpy数组
+            if img.dim() == 4:  # [B, C, H, W]
+                img = img.squeeze(0)  # 转换为[C, H, W]
+            
+            img_np = img.numpy()
+            
+            # 调整通道顺序和归一化
+            if img_np.shape[0] == 3:  # [C, H, W]
+                img_np = np.transpose(img_np, (1, 2, 0))  # 转换为[H, W, C]
+            
+            # 规范化到[0, 1]范围
+            img_np = (img_np + 1) / 2  # 从[-1,1]转换到[0,1]
+            img_np = np.clip(img_np, 0, 1)  # 确保在[0,1]范围内
+            
+            # 保存图像
+            plt.imsave(path, img_np)
+            
+        # 保存图像
+        save_tensor_image(sample, os.path.join(out_path, 'recon', fname))
+        save_tensor_image(y_n, os.path.join(out_path, 'input', fname))
+        save_tensor_image(ref_img, os.path.join(out_path, 'label', fname))
     except Exception as e:
         print(f"保存图像失败: {e}")
         try:
             # 备选方案
+            from util.img_utils import clear_color
             plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample)) 
             plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
             plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
-        except Exception as e:
-            print(f"备选保存方案也失败: {e}")
+        except Exception as e2:
+            print(f"备选保存方案也失败: {e2}")
     
     # 计算评价指标
+    psnr_val = 0
+    ssim_val = 0
+    lpips_val = 0
+    
     try:
         # 转换最佳图像和参考图像为 numpy 格式
         sample_np = sample.detach().cpu().squeeze().numpy()
@@ -1890,9 +1861,8 @@ def mpgd(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_see
         lpips_val = loss_fn_alex(sample_tensor, ref_tensor).item()
     except Exception as e:
         print(f"计算指标时出错: {e}")
-        psnr_val = 0
-        ssim_val = 0
-        lpips_val = 0
+        import traceback
+        traceback.print_exc()
 
     # 记录最终指标
     metrics = {
@@ -1912,7 +1882,7 @@ def mpgd(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_see
         # 记录重建图像
         writer.add_image(f'MPGD/Reconstructed/Image_{img_index}', (sample[0].clamp(-1, 1) + 1)/2, img_index)
         
-        # 记录误差图像
+        # 尝试记录误差图像
         try:
             error_map = torch.abs(ref_img - sample)
             error_map = error_map / error_map.max()  # 归一化误差
@@ -1928,23 +1898,10 @@ def mpgd(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_see
     return sample, metrics
 
 
-
-
+# 修改DPS函数，移除冗余记录
 def DPS(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_seed=None, writer=None, img_index=None):
     """
     采样、计算评价指标并保存结果
-    
-    Parameters:
-    - sample_fn: 采样函数
-    - ref_img: 参考图像张量
-    - y_n: 噪声后的图像张量
-    - out_path: 输出保存路径
-    - fname: 保存的文件名
-    - device: 运行的设备（CPU 或 GPU）
-    - mask: 可选的掩码
-    - random_seed: 随机种子
-    - writer: TensorBoard SummaryWriter对象
-    - img_index: 当前处理的图像索引，用于TensorBoard日志
     """
     
     # 使用传入的随机种子重新设置随机种子
@@ -1994,14 +1951,11 @@ def DPS(sample_fn, ref_img, y_n, out_path, fname, device, mask=None, random_seed
         'lpips': final_lpips
     }
     
-    # 将最终指标记录到TensorBoard
+    # 将最终指标记录到TensorBoard，但移除最终重建图像的记录
     if writer is not None and img_index is not None:
-        writer.add_scalar(f'Final/PSNR', final_psnr, img_index)
-        writer.add_scalar(f'Final/SSIM', final_ssim, img_index)
-        writer.add_scalar(f'Final/LPIPS', final_lpips, img_index)
-        
-        # 添加最终重建图像到TensorBoard
-        writer.add_image(f'Images/Reconstructed_{img_index}', best_img_torch[0], img_index)
+        writer.add_scalar(f'DPS/Final/PSNR', final_psnr, img_index)
+        writer.add_scalar(f'DPS/Final/SSIM', final_ssim, img_index)
+        writer.add_scalar(f'DPS/Final/LPIPS', final_lpips, img_index)
     
     # 打印最终的 PSNR, SSIM, LPIPS
     print(f"Final metrics between best reconstructed image and reference image:")
