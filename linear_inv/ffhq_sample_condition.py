@@ -22,6 +22,7 @@ from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 import csv
 import numpy as np
 from util.pnp_test import *
+from util.algo import *
 from motionblur.motionblur import Kernel
 from torch.utils.tensorboard import SummaryWriter
 import json
@@ -325,18 +326,6 @@ def main():
                     logger.error(f"DMPlug_turbulence执行错误: {e}")
                     continue
                 
-            elif args.algo == 'acce_ours':
-                try:
-                    sample, metrics = acce_DMPlug(
-                        model, sampler, measurement_cond_fn, ref_img, y_n, device, model_config, measure_config, operator, fname,
-                        iter_step=int(args.iter_step), iteration=args.iter, denoiser_step=args.timestep, stop_patience=5, 
-                        early_stopping_threshold=0.01, lr=0.005, out_path=out_path, mask=mask, random_seed=random_seed,
-                        writer=writer, img_index=i
-                    )
-                except Exception as e:
-                    logger.error(f"acce_DMPlug执行错误: {e}")
-                    continue
-                
             elif args.algo == 'mpgd':
                 try:
                     sample, metrics = mpgd(
@@ -353,7 +342,7 @@ def main():
                     sample, metrics, psnr_curve = acce_RED_diff(
                         model, sampler, measurement_cond_fn, ref_img, y_n, device, model_config, measure_config, operator, fname,
                         iter_step=int(args.iter_step), iteration=args.iter, denoiser_step=args.timestep, stop_patience=5, 
-                        early_stopping_threshold=0.02, lr=0.005, out_path=out_path, mask=mask, random_seed=random_seed,
+                        early_stopping_threshold=0.02, lr=0.003, out_path=out_path, mask=mask, random_seed=random_seed,
                         writer=writer, img_index=i
                     )
                     # 将当前图像的psnr_curve添加到所有曲线列表中
@@ -386,7 +375,21 @@ def main():
                 except Exception as e:
                     logger.error(f"acce_RED_diff_turbulence执行错误: {e}")
                     continue
-                
+            
+            # 在elif args.algo == 'acce_RED_diff':之后添加:
+
+            elif args.algo == 'RED_diff_reddiff':
+                try:
+                    sample, metrics = RED_diff_reddiff(
+                        model, sampler, measurement_cond_fn, ref_img, y_n, args, operator, device, model_config,
+                        measure_config, fname, early_stopping_threshold=1e-3, stop_patience=5, out_path=out_path,
+                        iteration=args.iter, lr=0.02, denoiser_step=args.timestep, mask=mask, random_seed=random_seed,
+                        writer=writer, img_index=i
+                    )
+                except Exception as e:
+                    logger.error(f"RED_diff_reddiff执行错误: {e}")
+                    continue
+    
             elif args.algo == 'dps':
                 try:
                     sample, metrics = DPS(

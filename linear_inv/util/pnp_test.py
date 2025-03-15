@@ -557,11 +557,16 @@ def DMPlug(
     writer=None,
     img_index=None
 ):
-    # 初始化早停策略
-
-    stop_patience = 10
-    early_stopping_threshold = 0.01
-    early_stopper = EarlyStopping(patience=stop_patience, min_delta=early_stopping_threshold, verbose=True)
+    # 初始化早停策略 - 使用与acce_RED_diff相同的ESWithWMV早停器
+    early_stopper = ESWithWMV(
+        window_size=8,                        
+        var_threshold=0.002, 
+        alpha=0.01,     
+        patience=8,               
+        min_epochs=30,                        
+        verbose=True                         
+    )
+    
     """
     DMPlug算法：使用扩散模型作为先验，通过迭代优化重建图像。
     """
@@ -682,16 +687,22 @@ def DMPlug(
                 if current_psnr == best_psnr:
                     writer.add_scalar(f'DMPlug/Image_{img_index}/Best/PSNR', best_psnr, epoch)
         
-        # 早停检查
-        if epoch > stop_patience:
-            recent_changes = mean_changes[-stop_patience:]
-            if all(abs(recent_changes[i] - recent_changes[i-1]) < early_stopping_threshold 
-                  for i in range(1, len(recent_changes))):
-                print(f"Early stopping triggered at epoch {epoch+1}")
-                if writer is not None and img_index is not None:
-                    writer.add_text(f'DMPlug/Image_{img_index}/EarlyStopping', 
-                                   f'Stopped at epoch {epoch+1} due to stability in image mean', 0)
-                break
+        # 使用ESWithWMV早停策略
+        if early_stopper(epoch, sample, loss.item()):
+            if epoch < 30 and len(losses) > 5:  
+                recent_losses = losses[-5:]
+                loss_trend = (recent_losses[0] - recent_losses[-1]) / recent_losses[0]
+                
+                if loss_trend > 0.1: 
+                    print(f"早停被触发，但损失仍在显著下降({loss_trend:.2%})，继续训练")
+                    early_stopper.counter = early_stopper.patience // 4  # 重置计数器
+                    continue
+            
+            print(f"早停触发，在第{epoch+1}轮停止训练")
+            if writer is not None and img_index is not None:
+                writer.add_text(f'DMPlug/Image_{img_index}/EarlyStopping', 
+                               f'Stopped at epoch {epoch+1} due to ESWithWMV criteria', 0)
+            break
     
     # 如果没有找到最佳图像，使用最后一个
     if best_img is None:
@@ -736,8 +747,6 @@ def DMPlug(
         curves_img = plt.imread(curves_path)
         writer.add_image(f'DMPlug/Image_{img_index}/Learning_Curves', 
                        torch.from_numpy(curves_img).permute(2, 0, 1), 0)
-        
-        # 删除记录误差图的部分
         
         # 记录最终状态
         writer.add_text(f'DMPlug/Image_{img_index}/Results', 
@@ -1192,12 +1201,12 @@ def acce_RED_diff(
     
     # 初始化新的早停器 (加权移动方差早停) - 调整为更保守的配置
     early_stopper = ESWithWMV(
-        window_size=8,                         # 使用更大窗口(20)计算加权移动方差，提高稳定性
-        var_threshold=0.002,  # 降低方差阈值，使其更难触发
-        alpha=0.01,     # 降低相对改进阈值，使其更容易满足条件
-        patience=8,               # 增加耐心参数，允许更长时间无改进
-        min_epochs=30,                         # 显著增加最小训练轮数，确保充分训练
-        verbose=True                           # 打印详细信息
+        window_size=8,                        
+        var_threshold=0.002, 
+        alpha=0.01,     
+        patience=8,               
+        min_epochs=30,                        
+        verbose=True                         
     )
     
     best_loss = float('inf')
@@ -1318,16 +1327,13 @@ def acce_RED_diff(
                         writer.add_image(f'acce_RED_diff/Image_{img_index}/Intermediate/Epoch_{epoch}', 
                                        (x_k[0] if x_k.dim() == 4 else x_k + 1) / 2, epoch)
                 
-                # 检查是否应该早停 - 添加更保守的条件
                 if early_stopper(epoch, x_k, loss.item()):
-                    # 额外检查：如果训练不足200轮且损失还在显著下降，继续训练
-                    if epoch < 30 and len(losses) > 5:  # 减少到30轮和5个样本检查
+                    if epoch < 30 and len(losses) > 5:  
                         recent_losses = losses[-5:]
                         loss_trend = (recent_losses[0] - recent_losses[-1]) / recent_losses[0]
                         
-                        if loss_trend > 0.1:  # 提高阈值到10%，确保显著下降才继续
+                        if loss_trend > 0.1: 
                             print(f"早停被触发，但损失仍在显著下降({loss_trend:.2%})，继续训练")
-                            # 部分重置早停器以继续训练，但不完全重置
                             early_stopper.counter = early_stopper.patience // 4  # 从1/2减少到1/4
                             continue
                     

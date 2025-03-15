@@ -68,9 +68,11 @@ class ConditioningMethod(ABC):
         elif self.noiser.__name__ == 'shot':
             # 泊松噪声
             Ax = self.operator.forward(x_0_hat, **kwargs)
-            difference = measurement - Ax
-            norm = torch.linalg.norm(difference)
-            norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0]    
+            difference = measurement-Ax
+            norm = torch.linalg.norm(difference) / measurement.abs()
+            norm = norm.mean()
+            norm_grad = torch.autograd.grad(outputs=norm, inputs=x_prev)[0] 
+            
         elif self.noiser.__name__ == 'speckle':
             # 散斑噪声
             Ax = self.operator.forward(x_0_hat, **kwargs)
