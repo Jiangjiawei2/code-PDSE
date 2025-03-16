@@ -378,18 +378,19 @@ def main():
             
             # 在elif args.algo == 'acce_RED_diff':之后添加:
 
-            elif args.algo == 'RED_diff_reddiff':
+            elif args.algo == 'reddiff':
                 try:
-                    sample, metrics = RED_diff_reddiff(
+                    sample, metrics = reddiff(
                         model, sampler, measurement_cond_fn, ref_img, y_n, args, operator, device, model_config,
-                        measure_config, fname, early_stopping_threshold=1e-3, stop_patience=5, out_path=out_path,
-                        iteration=args.iter, lr=0.02, denoiser_step=args.timestep, mask=mask, random_seed=random_seed,
+                        measure_config, fname, out_path=out_path,
+                        iteration=args.iter, lr=0.5,  # 学习率
+                        mask=mask, random_seed=random_seed,
                         writer=writer, img_index=i
                     )
                 except Exception as e:
-                    logger.error(f"RED_diff_reddiff执行错误: {e}")
-                    continue
-    
+                    logger.error(f"reddiff: {e}")
+                    continue    
+                
             elif args.algo == 'dps':
                 try:
                     sample, metrics = DPS(

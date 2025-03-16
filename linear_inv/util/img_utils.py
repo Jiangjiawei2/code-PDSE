@@ -7,7 +7,7 @@ from torch.autograd import Variable
 import matplotlib.pyplot as plt
 from motionblur.motionblur import Kernel
 from .fastmri_utils import fft2c_new, ifft2c_new
-
+import os
 
 """
 Helper functions for new types of inverse problems
@@ -55,6 +55,17 @@ def clear_color(x: torch.Tensor) -> np.ndarray:
     else:
         raise NotImplementedError
     
+
+
+def save_output_images(sample, y_n, ref_img, out_path, fname):
+    """保存重建图像、输入图像和参考图像"""
+    os.makedirs(os.path.join(out_path, 'recon'), exist_ok=True)
+    os.makedirs(os.path.join(out_path, 'input'), exist_ok=True)
+    os.makedirs(os.path.join(out_path, 'label'), exist_ok=True)
+    
+    plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample))
+    plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
+    plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
     
 # def clear_color(x):
 #     if torch.is_complex(x):

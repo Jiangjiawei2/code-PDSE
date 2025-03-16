@@ -10,4 +10,7 @@ from .reddiff import reddiff
 from .Trundiff import acce_RED_diff, acce_RED_diff_turbulence
 
 # MPGD和DPS算法
-from .mpgd import mpgd, DPS
+from .mpgd import mpgd
+
+# MPGD和DPS算法
+from .dps import DPS

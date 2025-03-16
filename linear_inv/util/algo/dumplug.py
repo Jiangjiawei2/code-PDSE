@@ -305,28 +305,10 @@ def DMPlug_turbulence(
             metrics=None  # 初次调用时不传递 metrics，函数会自动初始化
         )
 
-    # Save results
-    # Z_np = (Z.detach().cpu().numpy().squeeze(0)).clip(0, 1)
-    # plt.imsave(os.path.join(out_path, 'Z_image.png'), Z_np.transpose(1, 2, 0))
     plt.imsave(os.path.join(out_path, 'recon', fname), clear_color(sample))
     plt.imsave(os.path.join(out_path, 'recon', 'ker_'+fname), clear_color(out_k))
     plt.imsave(os.path.join(out_path, 'label', 'ker_'+fname), clear_color(kernel_ref))
 
-    # # Plot losses
-    # plt.plot(losses, label='Loss')
-    # plt.legend()
-    # plt.savefig(os.path.join(out_path, f"loss_{fname.split('.')[0]}.png"))    
-
-    # # Plot PSNR values
-    # plt.plot(metrics['psnr'])
-    # plt.savefig(os.path.join(out_path, 'psnr.png'))
-    # plt.close()
-    
-    # plt.imsave(os.path.join(out_path, 'input', fname), clear_color(y_n))
-    # plt.imsave(os.path.join(out_path, 'label', fname), clear_color(ref_img))
-    
-    
-    # 转换最佳图像和参考图像为 numpy 格式
     best_img_np = sample.cpu().squeeze().detach().numpy().transpose(1, 2, 0) 
     ref_img_np = ref_img.cpu().squeeze().numpy().transpose(1, 2, 0)
 
