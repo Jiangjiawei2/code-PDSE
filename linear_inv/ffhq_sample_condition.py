@@ -21,7 +21,7 @@ from tqdm import tqdm
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 import csv
 import numpy as np
-from util.pnp_test import *
+# from util.pnp_test import *
 from util.algo import *
 from motionblur.motionblur import Kernel
 from torch.utils.tensorboard import SummaryWriter
@@ -38,7 +38,7 @@ def main():
     parser.add_argument('--model_config', type=str,default="./configs/model_config.yaml")
     parser.add_argument('--diffusion_config', type=str, default="./configs/mgpd_diffusion_config.yaml")
     parser.add_argument('--task_config', type=str, default="./configs/super_resolution_config.yaml")
-    parser.add_argument('--gpu', type=int, default=1)
+    parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--timestep', type=int, default=10)
     parser.add_argument('--eta', type=float, default=0)
     parser.add_argument('--scale', type=float, default=17.5)
@@ -307,7 +307,7 @@ def main():
                     sample, metrics = DMPlug(
                         model, sampler, measurement_cond_fn, ref_img, y_n, args, operator, device, model_config,
                         measure_config, fname, early_stopping_threshold=1e-3, stop_patience=5, out_path=out_path,
-                        iteration=args.iter, lr=0.02, denoiser_step=args.timestep, mask=mask, random_seed=random_seed,
+                        iteration=args.iter, lr=0.05, denoiser_step=args.timestep, mask=mask, random_seed=random_seed,
                         writer=writer, img_index=i
                     )
                 except Exception as e:
@@ -319,7 +319,7 @@ def main():
                     sample, metrics = DMPlug_turbulence(
                         model, sampler, measurement_cond_fn, ref_img, y_n, args, operator, device, model_config,
                         measure_config, task_config, fname, kernel_ref=kernel, early_stopping_threshold=1e-3, 
-                        stop_patience=5, out_path=out_path, iteration=args.iter, lr=0.02, denoiser_step=args.timestep, 
+                        stop_patience=5, out_path=out_path, iteration=args.iter, lr=0.05, denoiser_step=args.timestep, 
                         mask=mask, random_seed=random_seed, writer=writer, img_index=i
                     )
                 except Exception as e:
@@ -378,18 +378,17 @@ def main():
             
             # 在elif args.algo == 'acce_RED_diff':之后添加:
 
-            elif args.algo == 'reddiff':
+            if args.algo == 'reddiff':
                 try:
                     sample, metrics = reddiff(
                         model, sampler, measurement_cond_fn, ref_img, y_n, args, operator, device, model_config,
-                        measure_config, fname, out_path=out_path,
-                        iteration=args.iter, lr=0.5,  # 学习率
-                        mask=mask, random_seed=random_seed,
+                        measure_config, fname, early_stopping_threshold=1e-4, stop_patience=8, out_path=out_path,
+                        iteration=args.iter, lr=0.01, denoiser_step=args.timestep, mask=mask, random_seed=random_seed,
                         writer=writer, img_index=i
                     )
                 except Exception as e:
-                    logger.error(f"reddiff: {e}")
-                    continue    
+                    logger.error(f"reddiff执行错误: {e}")
+                    continue  
                 
             elif args.algo == 'dps':
                 try:
@@ -399,18 +398,6 @@ def main():
                     )
                 except Exception as e:
                     logger.error(f"dps执行错误: {e}")
-                    continue
-                
-            elif args.algo == 'acce_RED_earlystop':
-                try:
-                    sample, metrics = acce_RED_earlystop(
-                        model, sampler, measurement_cond_fn, ref_img, y_n, device, model_config, measure_config, operator, fname,
-                        iter_step=3, iteration=args.iter, denoiser_step=args.timestep, stop_patience=5, 
-                        early_stopping_threshold=0.01, lr=0.01, out_path=out_path, mask=mask, random_seed=random_seed,
-                        writer=writer, img_index=i
-                    )
-                except Exception as e:
-                    logger.error(f"acce_RED_earlystop执行错误: {e}")
                     continue
                 
             else:

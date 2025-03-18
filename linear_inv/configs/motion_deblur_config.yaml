@@ -17,5 +17,5 @@ measurement:
 
   noise: 
     name: gaussian
-    sigma: 0.01
+    noise_scale: 0.01
 
