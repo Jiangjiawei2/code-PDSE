@@ -1,6 +1,7 @@
-# Manifold Preserving Guided Diffusion
+# Partial Diffusion Suffices: Score Evolution-Guided
+General Inverse Problems Solvingn
 The official PyTorch implementation of <a href="https://arxiv.org/abs//2311.16424">Manifold Preserving Guided Diffusion (MPGD)</a>. 
-This repository has python implementation of MPGD, a training-free sampling method for both pre-trained pixel-space diffusion models and latent diffusion models in a variety of conditional generation applications.
+This repository has python implementation of PDSE, a training-free sampling method for both pre-trained pixel-space diffusion models in a variety of conditional generation applications.
 Different guidance modalities we demonstrate are linear inverse problem solving (Gaussian deblurring and super resolution), FaceID guided generation CLIP guided generation and style guided generation with both pixel space diffusion models and latent diffusion models.
 Our implementation is based on the <a href="https://github.com/DPS2022/diffusion-posterior-sampling">DPS</a> and <a href="https://github.com/vvictoryuki/FreeDoM">FreeDoM</a> codebase, which are derived from the <a href="https://github.com/CompVis/stable-diffusion">Stable Diffusion</a> and <a href="https://github.com/ermongroup/ddim">DDIM</a> codebase.
 
